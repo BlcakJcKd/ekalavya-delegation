@@ -115,17 +115,23 @@ if [ -f "$CONFIG_FILE" ]; then
   echo "Existing config found, left untouched: $CONFIG_FILE"
 else
   mkdir -p "$CONFIG_DIR"
-  python3 -c "
+  if ! python3 - "$CONFIG_FILE" <<'PY'
 from delegation.config import default_config, save_config
 from pathlib import Path
-save_config(default_config(), Path(r'''$CONFIG_FILE'''))
-  "
+import sys
+save_config(default_config(), Path(sys.argv[1]))
+PY
+  then
+    echo "Core Ekalavya config bootstrap failed; installation aborted." >&2
+    exit 1
+  fi
   echo "Created default config: $CONFIG_FILE"
 fi
-python3 -c "
+if ! python3 - "$CONFIG_DIR" <<'PY'
 from ekalavya.config import ensure_control_files
 from pathlib import Path
-config_dir = Path(r'''$CONFIG_DIR''')
+import sys
+config_dir = Path(sys.argv[1])
 result = ensure_control_files(config_dir)
 if result.get('status') == 'incomplete':
     missing = ', '.join(result.get('missing', []))
@@ -134,7 +140,11 @@ for name in result['created']:
     print(f'Created default control file: {config_dir / name}')
 for name in result['skipped']:
     print(f'Existing control file found, left untouched: {config_dir / name}')
-"
+PY
+then
+  echo "Core Ekalavya control-file bootstrap failed; installation aborted." >&2
+  exit 1
+fi
 
 echo
 echo "== 3/3: installing skill =="

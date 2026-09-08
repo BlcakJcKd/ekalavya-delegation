@@ -108,6 +108,18 @@ def discover_models() -> dict[str, Any]:
     if missing:
         raise RuntimeError("required Gemini Flash runtime IDs missing: " + ", ".join(missing))
     catalogue = _update_profile_catalogue(discovered, observed_at, version)
+    catalogue_entries = load_catalogue(config_root() / "catalogue.json")
+    catalogue_by_generation: dict[str, dict[str, Any]] = {}
+    for entry in catalogue_entries:
+        if entry.get("provider") != "gemini" or entry.get("family") != "flash":
+            continue
+        generation = entry.get("generation")
+        if not generation:
+            provider_model_id = str(entry.get("provider_model_id", ""))
+            parts = provider_model_id.split("-")
+            generation = parts[1] if len(parts) > 1 else None
+        if generation:
+            catalogue_by_generation.setdefault(str(generation), entry)
     conn = connect()
     lifecycle = {"3.6": "previous", "3.7": "current", "3.8": "candidate"}
     ledger_models = []
@@ -117,15 +129,17 @@ def discover_models() -> dict[str, Any]:
         generation = parts[1] if len(parts) > 1 else None
         family = "flash" if len(parts) > 2 and parts[2] == "flash" else "unknown"
         variant = parts[-1] if family == "flash" else None
-        identity = CandidateIdentity(
-            provider="gemini", family=family, provider_model_id=model_id,
-            display_name=item["display_name"], generation=generation, variant=variant,
-            capabilities={"reasoning_values": [variant] if variant else []},
-            serving_engine="agy", serving_engine_version=version,
+        catalogue_entry = catalogue_by_generation.get(str(generation))
+        if catalogue_entry is None or not catalogue_entry.get("identity_key"):
+            raise RuntimeError(f"discovered Gemini generation is missing from the catalogue: {generation}")
+        identity = CandidateIdentity(**{name: catalogue_entry.get(name) for name in CandidateIdentity.__dataclass_fields__})
+        model_db_id = upsert_model(
+            conn, identity, identity_key=str(catalogue_entry["identity_key"]),
+            lifecycle=str(catalogue_entry.get("lifecycle", lifecycle.get(generation, "candidate"))),
+            discovered_at=observed_at,
         )
-        model_db_id = upsert_model(conn, identity, lifecycle=lifecycle.get(generation, "candidate"), discovered_at=observed_at)
         record_availability(conn, model_db_id, state="available", observed_at=observed_at, source="agy models", details={"exact_model_id": model_id, "reasoning": variant, "lifecycle_scope": "gemini_flash_generation_family"})
-        ledger_models.append({"provider_model_id": model_id, "generation": generation, "reasoning": variant, "lifecycle": lifecycle.get(generation, "historical")})
+        ledger_models.append({"provider_model_id": model_id, "generation": generation, "reasoning": variant, "lifecycle": catalogue_entry.get("lifecycle", lifecycle.get(generation, "historical"))})
     result = {"timestamp": observed_at, "client": "agy", "client_version": version, "models": ledger_models, "catalogue": catalogue}
     (state_root() / "discovery.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return result

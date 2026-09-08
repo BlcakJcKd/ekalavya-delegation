@@ -10,12 +10,13 @@ from unittest.mock import patch
 from benchmark.adapters import AntigravityAdapter
 from benchmark.public_characterization.evaluate import evaluate
 from benchmark.public_characterization.generate import make_instance, manifest, materialize, workspace_digest
-from benchmark.public_characterization.runner import _update_profile_catalogue, check_local_suite
+from benchmark.public_characterization.runner import _update_profile_catalogue, check_local_suite, discover_models
 from benchmark.public_characterization.audit import _matrix
 from benchmark.provenance import ProvenanceError, validate_git_identity
 from benchmark.review_bundle import create_review_bundle
-from ekalavya.catalogue import canonicalize_gemini_flash_generations, expand_runtime_variants
-from ekalavya.config import ensure_control_files, load_profiles
+from ekalavya.catalogue import canonicalize_gemini_flash_generations, expand_runtime_variants, promote, save_catalogue
+from ekalavya.config import ensure_control_files, load_profiles, save_profiles
+from ekalavya.ledger import connect
 from ekalavya.harness_registry import current_registry, validate_registry
 from ekalavya.schema import CandidateIdentity, RunIntent
 from ekalavya.resolver import resolve
@@ -93,6 +94,60 @@ class PublicCharacterizationTests(unittest.TestCase):
                 self.assertEqual(profile["default_reasoning"], "medium")
                 candidate_key = next(entry["identity_key"] for entry in catalogue if entry.get("generation") == "3.8")
                 self.assertIn(candidate_key, profile["permitted_candidates"])
+
+    def test_real_discover_models_reuses_catalogue_identity_across_agy_upgrade(self):
+        discovered = "\n".join(
+            f"gemini-{generation}-flash-{reasoning}\tGemini {generation} Flash ({reasoning.title()})"
+            for generation in ("3.6", "3.7", "3.8")
+            for reasoning in ("low", "medium", "high")
+        ) + "\n"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch.dict(os.environ, {"HOME": str(root / "home"), "XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}, clear=False):
+                config_root = root / "config" / "ekalavya"
+                config_root.mkdir(parents=True)
+                save_config(default_config())
+                ensure_control_files(config_root)
+                versions = iter(("1.1.27", "1.1.28"))
+                calls = []
+
+                def fake_command(argv, **kwargs):
+                    calls.append(argv)
+                    if argv == ["agy", "models"]:
+                        return 0, discovered, ""
+                    if argv == ["agy", "--version"]:
+                        return 0, next(versions) + "\n", ""
+                    raise AssertionError(argv)
+
+                with patch("benchmark.public_characterization.runner.command", side_effect=fake_command):
+                    discover_models()
+                    first_entries = json.loads((config_root / "catalogue.json").read_text())
+                    promoted_key = next(entry["identity_key"] for entry in first_entries if entry.get("generation") == "3.8")
+                    save_catalogue(config_root / "catalogue.json", promote(first_entries, promoted_key, promotion_basis="manual"))
+                    profiles = load_profiles(config_root / "profiles.json")
+                    flash = next(profile for profile in profiles if profile["name"] == "flash")
+                    flash["default_identity_key"] = promoted_key
+                    save_profiles(profiles, config_root / "profiles.json")
+                    discover_models()
+
+                entries = json.loads((config_root / "catalogue.json").read_text())
+                logical = {
+                    entry.get("generation") or entry.get("provider_model_id"): entry
+                    for entry in entries
+                    if entry.get("provider") == "gemini" and entry.get("family") == "flash"
+                }
+                self.assertEqual(logical["3.8"]["identity_key"], promoted_key)
+                self.assertEqual(logical["3.8"]["lifecycle"], "current")
+                profile = next(item for item in load_profiles(config_root / "profiles.json") if item["name"] == "flash")
+                self.assertEqual(profile["default_identity_key"], promoted_key)
+                rows = connect().execute(
+                    "SELECT identity_key, lifecycle FROM models WHERE provider=? AND family=?",
+                    ("gemini", "flash"),
+                ).fetchall()
+                self.assertEqual(len(rows), 3)
+                self.assertEqual({row[0] for row in rows}, {entry["identity_key"] for entry in logical.values()})
+                self.assertEqual(next(row[1] for row in rows if row[0] == promoted_key), "current")
+                self.assertEqual(calls, [["agy", "models"], ["agy", "--version"], ["agy", "models"], ["agy", "--version"]])
 
 
 class HarnessRegistryTests(unittest.TestCase):
