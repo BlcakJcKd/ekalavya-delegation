@@ -15,6 +15,45 @@ def config_root() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")).expanduser() / "ekalavya"
 
 
+def load_profiles(path: Path | None = None) -> list[dict[str, object]]:
+    """Load the private profile control file, treating an absent file as empty."""
+    target = path or config_root() / "profiles.json"
+    if not target.is_file():
+        return []
+    value = json.loads(target.read_text())
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise ValueError("profiles must be a JSON list of objects")
+    return value
+
+
+def save_profiles(profiles: list[dict[str, object]], path: Path | None = None) -> None:
+    """Atomically write profiles with the same private permissions as catalogue."""
+    target = path or config_root() / "profiles.json"
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(target.parent, 0o700)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(profiles, indent=2, sort_keys=True) + "\n")
+    os.chmod(tmp, 0o600)
+    tmp.replace(target)
+    os.chmod(target, 0o600)
+
+
+def permit_profile_candidates(
+    profiles: list[dict[str, object]], profile_name: str, candidates: list[str],
+) -> list[dict[str, object]]:
+    """Append known candidate identities without changing a profile default."""
+    updated = [dict(profile) for profile in profiles]
+    profile = next((item for item in updated if item.get("name") == profile_name), None)
+    if profile is None:
+        raise ValueError(f"unknown profile: {profile_name}")
+    allowed = list(profile.get("permitted_candidates") or [])
+    for candidate in candidates:
+        if candidate not in allowed:
+            allowed.append(candidate)
+    profile["permitted_candidates"] = allowed
+    return updated
+
+
 def legacy_root() -> Path:
     return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")).expanduser() / "agent-delegation"
 
@@ -53,8 +92,6 @@ def ensure_control_files(target: Path | None = None) -> dict[str, object]:
     """Create additive Ekalavya catalogue/profile files from fixed route metadata."""
     target = target or config_root(); target.mkdir(parents=True, exist_ok=True, mode=0o700); os.chmod(target, 0o700)
     catalogue_path, profiles_path = target / "catalogue.json", target / "profiles.json"
-    if catalogue_path.exists() or profiles_path.exists():
-        return {"created": [], "skipped": [name for name, path in (("catalogue.json", catalogue_path), ("profiles.json", profiles_path)) if path.exists()]}
     from delegation import routing
     from delegation.core import DELEGATES
     catalogue=[]; profiles=[]
@@ -62,7 +99,18 @@ def ensure_control_files(target: Path | None = None) -> dict[str, object]:
         identity = CandidateIdentity(routing.ROUTE_PROVIDER[route], route, spec.model, route, capabilities={"reasoning_values": [spec.effort] if spec.effort else []})
         item = identity.as_dict(); item.update({"identity_key": identity.identity_key, "lifecycle": "current", "legacy_route": route, "transport": routing.ROUTE_TRANSPORT.get(route)})
         catalogue.append(item)
-        profiles.append({"name": route, "description": f"Migrated explicit legacy route {route}", "default_identity_key": identity.identity_key, "permitted_candidates": [identity.identity_key], "reasoning_policy": "fixed", "default_reasoning": spec.effort})
-    for path, value in ((catalogue_path, catalogue), (profiles_path, profiles)):
-        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n"); os.chmod(path, 0o600)
-    return {"created": ["catalogue.json", "profiles.json"], "skipped": []}
+        profiles.append({"name": route, "description": f"Stable explicit route {route}", "default_identity_key": identity.identity_key, "permitted_candidates": [identity.identity_key], "reasoning_policy": "fixed", "default_reasoning": spec.effort})
+    created: list[str] = []
+    skipped: list[str] = []
+    if catalogue_path.exists():
+        skipped.append("catalogue.json")
+    else:
+        from .catalogue import save_catalogue
+        save_catalogue(catalogue_path, catalogue)
+        created.append("catalogue.json")
+    if profiles_path.exists():
+        skipped.append("profiles.json")
+    else:
+        save_profiles(profiles, profiles_path)
+        created.append("profiles.json")
+    return {"created": created, "skipped": skipped}

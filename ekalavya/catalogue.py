@@ -153,6 +153,80 @@ def canonicalize_gemini_flash_generations(
     return result
 
 
+def merge_gemini_flash_discovery(
+    entries: list[dict[str, Any]],
+    discovered: list[dict[str, str]],
+    *,
+    observed_at: str,
+    serving_engine_version: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Add or refresh Gemini Flash generation facts without changing defaults.
+
+    The bootstrap route identity remains the 3.7 current anchor until an
+    explicit promotion changes it.  A discovered 3.8 generation is therefore
+    appended as a candidate, not treated as an implicit lifecycle migration.
+    Existing exact identities retain lifecycle and promotion history.
+    """
+    canonical = canonicalize_gemini_flash_generations(
+        [], discovered, observed_at=observed_at, serving_engine_version=serving_engine_version,
+    )
+    result = [dict(entry) for entry in entries]
+    exact = {entry.get("identity_key"): index for index, entry in enumerate(result)}
+    has_seed_37 = any(
+        entry.get("provider") == "gemini"
+        and entry.get("family") == "flash"
+        and str(entry.get("provider_model_id", "")).startswith("gemini-3.7-flash-")
+        and not entry.get("generation")
+        for entry in result
+    )
+    added: list[str] = []
+    updated: list[str] = []
+    registered: list[str] = []
+    for incoming in canonical:
+        generation = incoming.get("generation")
+        # Keep the deterministic bootstrap current identity as the sole 3.7
+        # current anchor.  Record availability facts on it without replacing
+        # its identity or changing profile/default policy.
+        if generation == "3.7" and has_seed_37:
+            seed_index = next(i for i, entry in enumerate(result) if entry.get("provider") == "gemini" and entry.get("family") == "flash" and str(entry.get("provider_model_id", "")).startswith("gemini-3.7-flash-") and not entry.get("generation"))
+            seed = dict(result[seed_index])
+            seed.update({
+                "discovery_source": "agy models",
+                "discovery_timestamp": observed_at,
+                "availability_observed_at": observed_at,
+                "discovered_runtime_variants": incoming["runtime_variants"],
+                "discovery_client_version": serving_engine_version,
+            })
+            if seed != result[seed_index]:
+                result[seed_index] = seed
+                updated.append(str(seed.get("identity_key")))
+            registered.append(str(seed.get("identity_key")))
+            continue
+        key = incoming["identity_key"]
+        if key in exact:
+            old = dict(result[exact[key]])
+            lifecycle = old.get("lifecycle", "candidate")
+            promotion = {name: old[name] for name in ("promotion_basis", "promotion_reason") if name in old}
+            old.update(incoming)
+            old["lifecycle"] = lifecycle
+            old.update(promotion)
+            if old != result[exact[key]]:
+                result[exact[key]] = old
+                updated.append(key)
+            registered.append(key)
+            continue
+        # The repository lifecycle seed is explicit only for historical 3.6;
+        # every newly observed generation (including 3.8 and later) is a
+        # candidate until the user promotes it.
+        item = dict(incoming)
+        item["lifecycle"] = "previous" if generation == "3.6" else "candidate"
+        result.append(item)
+        exact[key] = len(result) - 1
+        added.append(key)
+        registered.append(key)
+    return result, {"added": added, "updated": updated, "registered": registered}
+
+
 def promote(
     entries: list[dict[str, Any]],
     identity_key: str,

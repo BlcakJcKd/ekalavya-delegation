@@ -182,7 +182,19 @@ class EkalavyaControlPlaneTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             report = ensure_control_files(Path(d)); self.assertEqual(set(report["created"]), {"catalogue.json", "profiles.json"})
             self.assertGreater(len(json.loads((Path(d) / "catalogue.json").read_text())), 1)
+            self.assertNotIn("Migrated", (Path(d) / "profiles.json").read_text())
             self.assertEqual(ensure_control_files(Path(d))["created"], [])
+
+    def test_bootstrap_fills_only_the_missing_control_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            ensure_control_files(root)
+            original = (root / "catalogue.json").read_bytes()
+            (root / "profiles.json").unlink()
+            report = ensure_control_files(root)
+            self.assertEqual(report["created"], ["profiles.json"])
+            self.assertEqual(report["skipped"], ["catalogue.json"])
+            self.assertEqual((root / "catalogue.json").read_bytes(), original)
 
 
 if __name__ == "__main__":

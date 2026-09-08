@@ -23,6 +23,23 @@ discovery exists, it keeps `~/.claude/skills/delegation` linked to that
 canonical skill. Core installation/configuration failures stop the installer;
 missing optional provider CLIs and development/test dependencies do not.
 
+When both input and output are terminals, the installer offers to launch
+`eka setup` after core installation. The interactive UI chooses integrations,
+providers, and model profiles; it does not install models, third-party
+harnesses, or provider authentication. In non-interactive use, run the
+read-only readiness inspection and make only explicitly requested changes:
+
+```bash
+eka setup --json
+eka config enable-provider <provider>
+eka config enable-model <profile>
+```
+
+Provider selection, model/profile selection, and effective availability are
+separate. Disabling a provider leaves its model choices recorded but makes
+their effective availability false. A selected provider with no enabled model
+profiles is reported as a configuration warning rather than silently filled.
+
 Run repository no-model validation and the developer test suite separately:
 
 ```bash
@@ -44,6 +61,8 @@ ekalavya --help
 eka status --primary codex
 eka profiles
 eka models
+eka models refresh --provider gemini
+eka setup
 eka run <profile> --workspace DIR --prompt-file FILE
 eka config
 eka history

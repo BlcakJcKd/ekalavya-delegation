@@ -102,7 +102,7 @@ if [ -n "${CANONICAL_BIN}" ]; then
   if [ -z "${EXISTING_EKA}" ]; then
     ln -s "${CANONICAL_BIN}" "${BIN_DIR}/eka"
     echo "Installed shorthand: ${BIN_DIR}/eka -> ${CANONICAL_BIN}"
-  elif [ "$(readlink -f "${EXISTING_EKA}" 2>/dev/null || true)" = "$(readlink -f "${CANONICAL_BIN}")" ]; then
+  elif [ "$(readlink "${EXISTING_EKA}" 2>/dev/null || true)" = "$PIPX_VENV_DIR/bin/eka" ] || [ "$(readlink -f "${EXISTING_EKA}" 2>/dev/null || true)" = "$(readlink -f "${CANONICAL_BIN}")" ]; then
     echo "Shorthand already points to this Ekalavya installation: ${EXISTING_EKA}"
   else
     echo "Shorthand collision: eka already resolves to ${EXISTING_EKA}; left it untouched" >&2
@@ -165,3 +165,15 @@ echo "Logs:   $STATE_LOG_DIR"
 echo "Skill:  $AGENTS_SKILL_FILE"
 echo
 echo "If a command shows 'NOT ON PATH', run: pipx ensurepath (then open a new shell)"
+
+# Provider/profile selection belongs to the explicit setup command.  Never
+# attempt curses input in scripts, CI, or AI-agent installs without a TTY.
+if [ -t 0 ] && [ -t 1 ]; then
+  read -r -p "Run Ekalavya setup now? [y/N] " SETUP_REPLY || SETUP_REPLY=""
+  case "$SETUP_REPLY" in
+    [yY]|[yY][eE][sS]) ekalavya setup ;;
+    *) echo "Next: Run eka setup to choose integrations and model profiles." ;;
+  esac
+else
+  echo "Next: Run eka setup to choose integrations and model profiles."
+fi

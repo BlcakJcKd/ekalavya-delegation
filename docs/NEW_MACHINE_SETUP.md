@@ -54,6 +54,38 @@ for configured shared routes; it is not an inference request.
 
 ## 4. Configuration
 
+For interactive first-run onboarding, choose only the integrations, providers,
+and model profiles you want:
+
+```bash
+eka setup
+```
+
+The UI detects local harness executables only as advisory information. It
+does not install or authenticate third-party software, and Cancel writes
+nothing. For an agent or non-TTY script, inspect readiness without mutation,
+then use the explicit configuration commands for the user's stated choices:
+
+```bash
+eka setup --json
+eka config enable-provider <provider>
+eka config enable-model <profile>
+```
+
+Provider configuration, model/profile configuration, and effective
+availability remain separate: disabling a provider does not erase model
+choices, but its effective routes are unavailable. A selected provider with
+no selected model profile is reported as a warning.
+
+Gemini's documented zero-inference discovery path registers factual candidate
+identities without changing lifecycle or the Flash default:
+
+```bash
+eka models refresh --provider gemini
+```
+
+Promotion is a separate explicit user action after inspecting `eka models`.
+
 Inspect or explicitly change user-owned availability policy with:
 
 ```bash

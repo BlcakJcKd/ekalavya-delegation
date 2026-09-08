@@ -20,8 +20,9 @@ from delegation.status_cli import _print_human, build_report
 from delegation.vllm import inspect_vllm_routes
 
 from . import __version__
-from .catalogue import PROMOTION_BASES, load_catalogue, promote, save_catalogue
-from .config import config_root, migrate_legacy_config
+from .catalogue import PROMOTION_BASES, load_catalogue, merge_gemini_flash_discovery, promote, save_catalogue
+from .config import config_root, load_profiles, migrate_legacy_config, permit_profile_candidates, save_profiles
+from .discovery import DiscoveryError, discover_gemini
 from .executor import execute
 from .harness_registry import current_registry, validate_registry
 from .ledger import connect, default_db_path, finalize_run, record_availability, record_default_change, record_promotion_event, record_resolution, record_run, upsert_model
@@ -36,8 +37,69 @@ def _paths() -> tuple[Path, Path, Path]:
 
 
 def _profiles(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file(): return []
-    value = json.loads(path.read_text()); return value if isinstance(value, list) else []
+    return load_profiles(path)
+
+
+def _refresh_gemini_catalogue() -> dict[str, Any]:
+    """Discover and register Gemini candidates without altering profile defaults."""
+    discovery = discover_gemini()
+    root, catalogue_path, profiles_path = _paths()
+    current = load_catalogue(catalogue_path)
+    updated, merge = merge_gemini_flash_discovery(
+        current,
+        discovery["models"],
+        observed_at=str(discovery["observed_at"]),
+        serving_engine_version=str(discovery["client_version"]),
+    )
+    profiles = _profiles(profiles_path)
+    permitted = [key for key in merge["registered"] if any(entry.get("identity_key") == key and entry.get("provider") == "gemini" and entry.get("family") == "flash" for entry in updated)]
+    changed_profiles = permit_profile_candidates(profiles, "flash", permitted)
+    # Validate all derived state before writing either control file.  Each
+    # individual file write is atomic and private; a failed discovery writes
+    # neither catalogue nor profile state.
+    if updated != current:
+        save_catalogue(catalogue_path, updated)
+    if changed_profiles != profiles:
+        save_profiles(changed_profiles, profiles_path)
+    conn = connect()
+    by_key = {entry.get("identity_key"): entry for entry in updated}
+    for key in merge["registered"]:
+        entry = by_key.get(key)
+        if not entry:
+            continue
+        identity = CandidateIdentity(**{name: entry.get(name) for name in CandidateIdentity.__dataclass_fields__})
+        model_id = upsert_model(conn, identity, lifecycle=str(entry.get("lifecycle", "candidate")), discovered_at=str(discovery["observed_at"]))
+        record_availability(conn, model_id, state="available", observed_at=str(discovery["observed_at"]), source="agy models", details={"provider_model_id": identity.provider_model_id, "client_version": discovery["client_version"]})
+    return {
+        **discovery,
+        "added_candidates": len(merge["added"]),
+        "updated_candidates": len(merge["updated"]),
+        "registered_identity_keys": merge["registered"],
+        "auto_promoted": 0,
+        "profile_default_changed": False,
+        "default_reasoning_changed": False,
+    }
+
+
+def _validated_source_candidates(incoming: object) -> list[dict[str, Any]]:
+    if not isinstance(incoming, list):
+        raise ValueError("models refresh source must contain a JSON list")
+    result: list[dict[str, Any]] = []
+    for raw in incoming:
+        if not isinstance(raw, dict):
+            raise ValueError("models refresh source entries must be objects")
+        if not isinstance(raw.get("provider"), str) or not raw["provider"]:
+            raise ValueError("models refresh source entry requires provider")
+        if not isinstance(raw.get("provider_model_id"), str) or not raw["provider_model_id"]:
+            raise ValueError("models refresh source entry requires provider_model_id")
+        item = dict(raw)
+        identity = CandidateIdentity(**{name: item.get(name) for name in CandidateIdentity.__dataclass_fields__})
+        supplied = item.get("identity_key")
+        if supplied is not None and supplied != identity.identity_key:
+            raise ValueError("models refresh source identity_key does not match identity fields")
+        item["identity_key"] = identity.identity_key
+        result.append(item)
+    return result
 
 
 def _named_route_profile(name: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
@@ -165,15 +227,14 @@ def cmd_models(args: argparse.Namespace) -> int:
                 print(f"unknown profile: {profile_name}", file=sys.stderr)
                 return 2
             old_default_identity_key = profile.get("default_identity_key")
+            profiles = permit_profile_candidates(profiles, profile_name, [target])
+            profile = next(item for item in profiles if item.get("name") == profile_name)
             profile["default_identity_key"] = target
             if getattr(args, "default_reasoning", None):
                 profile["default_reasoning"] = args.default_reasoning
             profile["promotion_basis"] = args.basis
             profile["promotion_reason"] = reason
-            tmp = profiles_path.with_name(f".{profiles_path.name}.{os.getpid()}.tmp")
-            tmp.write_text(json.dumps(profiles, indent=2, sort_keys=True) + "\n")
-            os.chmod(tmp, 0o600)
-            tmp.replace(profiles_path)
+            save_profiles(profiles, profiles_path)
         save_catalogue(path, updated)
         conn = connect()
         record_promotion_event(conn, target, from_state=match.get("lifecycle"), to_state="current", reason=reason, promotion_basis=args.basis)
@@ -182,19 +243,23 @@ def cmd_models(args: argparse.Namespace) -> int:
         _json_or_text({"action": "promote", "identity_key": target, "promotion_basis": args.basis, "promotion_reason": reason, "set_default": bool(getattr(args, "set_default", False))}, args.json)
         return 0
     if getattr(args, "action", None) == "refresh":
-        # Explicit refresh is intentionally file-driven in V1; it cannot silently
-        # contact providers or promote candidates.
-        if not args.source:
-            print("models refresh requires --source FILE (provider discovery output); no network discovery performed", file=sys.stderr); return 2
-        incoming = json.loads(Path(args.source).read_text())
-        if not isinstance(incoming, list):
-            print("models refresh source must contain a JSON list", file=sys.stderr); return 2
+        if bool(args.source) == bool(getattr(args, "provider", None)):
+            print("models refresh requires exactly one of --source FILE or --provider gemini", file=sys.stderr); return 2
+        if getattr(args, "provider", None) == "gemini":
+            try:
+                _json_or_text(_refresh_gemini_catalogue(), args.json)
+            except (DiscoveryError, ValueError, OSError) as exc:
+                print(f"Gemini discovery failed; catalogue unchanged: {exc}", file=sys.stderr)
+                return 2
+            return 0
+        try:
+            incoming = _validated_source_candidates(json.loads(Path(args.source).read_text()))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"models refresh source rejected: {exc}", file=sys.stderr); return 2
         current = load_catalogue(path); known = {e.get("identity_key") for e in current}; added = 0
         conn = connect(); observed_at = datetime.now(timezone.utc).isoformat()
         for raw in incoming:
             item = dict(raw)
-            if not item.get("identity_key"):
-                item["identity_key"] = CandidateIdentity(**{k: item.get(k) for k in CandidateIdentity.__dataclass_fields__}).identity_key
             existing = next((e for e in current if e.get("identity_key") == item["identity_key"]), None)
             item["lifecycle"] = existing.get("lifecycle", "candidate") if existing else "candidate"
             if item.get("identity_key") not in known:
@@ -247,6 +312,49 @@ def cmd_config(args: argparse.Namespace) -> int:
         print(f"unknown config action: {action}", file=sys.stderr); return 2
     save_config(updated)
     _json_or_text({"action": action, "target": target, **_availability_payload(updated)}, args.json)
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Human onboarding: selection is explicit, harness readiness is advisory."""
+    from delegation.config_tui import run_interactive_setup, setup_detection, setup_readiness
+
+    try:
+        config = load_config()
+    except ValueError as exc:
+        print(f"setup config error: {exc}", file=sys.stderr)
+        return 2
+    detection = setup_detection()
+    if args.json:
+        _json_or_text({"interactive": False, "readiness": setup_readiness(config, detection)}, True)
+        return 0
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("eka setup requires an interactive TTY; use `eka setup --json` for read-only readiness, then explicit `eka config` commands for automation.", file=sys.stderr)
+        return 2
+    result = run_interactive_setup()
+    if result["cancelled"]:
+        print("eka setup: cancelled, no changes made")
+        return 0
+    print("eka setup: saved" if result["changed"] else "eka setup: no changes made")
+    for line in result.get("changes", []):
+        print(f"  {line}")
+    readiness = result["readiness"]
+    for warning in readiness["warnings"]:
+        print(f"  warning: {warning}")
+    selected = {item["provider"]: item for item in readiness["providers"] if item["selected"]}
+    gemini = selected.get("gemini")
+    if gemini and "flash" in gemini["selected_models"]:
+        if gemini["detected"]:
+            try:
+                refresh = _refresh_gemini_catalogue()
+                print(f"  Gemini discovery: registered {refresh['added_candidates']} candidate(s), updated {refresh['updated_candidates']} identity record(s)")
+            except (DiscoveryError, ValueError, OSError) as exc:
+                print(f"  Gemini remains selected; discovery prerequisite unresolved: {exc}")
+        else:
+            print("  Gemini remains selected; next action: install/authenticate the AGY harness, then run `eka models refresh --provider gemini`.")
+    for provider, item in selected.items():
+        if provider != "gemini" and not item["detected"]:
+            print(f"  {item['label']} remains selected; harness not detected. Install/authenticate it using its provider-owned setup, then run `eka status`.")
     return 0
 
 
@@ -325,8 +433,9 @@ def _parser() -> argparse.ArgumentParser:
     def common(q): q.add_argument("--json", action="store_true")
     q=sub.add_parser("status", help="network-free catalogue/profile overview"); q.add_argument("--primary"); q.add_argument("--live", action="store_true", help="perform explicit GET-only shared-route observability checks"); common(q); q.set_defaults(func=cmd_status)
     q=sub.add_parser("profiles", help="list stable capability profiles, not raw model IDs"); common(q); q.set_defaults(func=cmd_profiles)
-    q=sub.add_parser("models", help="list catalogue identities; promotion is explicit"); q.add_argument("action", nargs="?", choices=["refresh", "promote"], default=None); q.add_argument("target", nargs="?"); q.add_argument("--source", type=Path); q.add_argument("--basis", choices=sorted(PROMOTION_BASES - {"unspecified"}), default="unspecified"); q.add_argument("--promotion-reason"); q.add_argument("--set-default", action="store_true"); q.add_argument("--profile"); q.add_argument("--default-reasoning", choices=["low", "medium", "high"]); common(q); q.set_defaults(func=cmd_models)
+    q=sub.add_parser("models", help="list catalogue identities; promotion is explicit"); q.add_argument("action", nargs="?", choices=["refresh", "promote"], default=None); q.add_argument("target", nargs="?"); q.add_argument("--source", type=Path); q.add_argument("--provider", choices=["gemini"]); q.add_argument("--basis", choices=sorted(PROMOTION_BASES - {"unspecified"}), default="unspecified"); q.add_argument("--promotion-reason"); q.add_argument("--set-default", action="store_true"); q.add_argument("--profile"); q.add_argument("--default-reasoning", choices=["low", "medium", "high"]); common(q); q.set_defaults(func=cmd_models)
     q=sub.add_parser("config", help="inspect or explicitly mutate user-owned availability configuration"); q.add_argument("action", nargs="?", choices=["list", "migrate", "enable", "disable", "enable-provider", "disable-provider", "enable-model", "disable-model"]); q.add_argument("target", nargs="?"); q.add_argument("--reason"); common(q); q.set_defaults(func=cmd_config)
+    q=sub.add_parser("setup", help="interactive first-run integration and profile selection"); common(q); q.set_defaults(func=cmd_setup)
     q=sub.add_parser("history"); q.add_argument("--profile"); q.add_argument("--provider"); q.add_argument("--model"); q.add_argument("--limit", type=int, default=20); common(q); q.set_defaults(func=cmd_history)
     q=sub.add_parser("spend"); common(q); q.set_defaults(func=cmd_spend)
     q=sub.add_parser("doctor"); common(q); q.set_defaults(func=cmd_doctor)

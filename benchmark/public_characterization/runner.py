@@ -19,8 +19,9 @@ from benchmark.adapters import AntigravityAdapter
 from benchmark.v2.plotting import plot_rows
 from benchmark.v2.telemetry import parse_trace
 from benchmark.provenance import validate_git_identity
-from ekalavya.catalogue import canonicalize_gemini_flash_generations, load_catalogue, save_catalogue
-from ekalavya.config import config_root
+from ekalavya.catalogue import load_catalogue, merge_gemini_flash_discovery, save_catalogue
+from ekalavya.config import config_root, load_profiles, permit_profile_candidates, save_profiles
+from ekalavya.discovery import DiscoveryError, gemini_flash_generations, parse_agy_models
 from ekalavya.harness_registry import current_registry, validate_registry
 from ekalavya.ledger import (
     connect, default_state_dir, finalize_run, record_availability, record_benchmark_suite,
@@ -58,7 +59,7 @@ def state_root() -> Path:
 
 def command(argv: list[str], *, cwd: Path | None = None, timeout: int = 60) -> tuple[int, str, str]:
     try:
-        result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, timeout=timeout)
+        result = subprocess.run(argv, cwd=cwd, text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return -1, "", str(exc)
     return result.returncode, result.stdout, result.stderr
@@ -70,39 +71,29 @@ def _agy_version() -> str:
 
 
 def _parse_discovery(stdout: str) -> list[dict[str, str]]:
-    discovered = []
-    for line in stdout.splitlines():
-        if "\t" not in line:
-            continue
-        model_id, display_name = line.split("\t", 1)
-        model_id = model_id.strip()
-        if model_id.startswith("gemini-3."):
-            discovered.append({"provider_model_id": model_id, "display_name": display_name.strip()})
-    return discovered
+    """Use the control-plane parser so discovery has one strict contract."""
+    try:
+        return gemini_flash_generations(parse_agy_models(stdout))
+    except DiscoveryError as exc:
+        raise RuntimeError(f"AGY discovery output rejected: {exc}") from exc
 
 
 def _update_profile_catalogue(discovered: list[dict[str, str]], observed_at: str, version: str) -> dict[str, Any]:
     root = config_root()
     catalogue_path, profiles_path = root / "catalogue.json", root / "profiles.json"
     entries = load_catalogue(catalogue_path)
-    updated = canonicalize_gemini_flash_generations(entries, discovered, observed_at=observed_at, serving_engine_version=version)
+    updated, merged = merge_gemini_flash_discovery(entries, discovered, observed_at=observed_at, serving_engine_version=version)
+    profiles = load_profiles(profiles_path)
+    profiles = permit_profile_candidates(profiles, "flash", merged["registered_identity_keys"])
     save_catalogue(catalogue_path, updated)
-    profiles = json.loads(profiles_path.read_text()) if profiles_path.is_file() else []
-    flash = next((profile for profile in profiles if profile.get("name") == "flash"), None)
-    generation_entries = {entry.get("generation"): entry for entry in updated if entry.get("catalogue_key", "").startswith("gemini:flash:")}
-    if flash is not None and "3.7" in generation_entries:
-        current = generation_entries["3.7"]
-        flash["default_identity_key"] = current["identity_key"]
-        flash["permitted_candidates"] = [generation_entries[g]["identity_key"] for g in ("3.6", "3.7", "3.8") if g in generation_entries]
-        flash["reasoning_policy"] = "overrideable"
-        flash["default_reasoning"] = "medium"
-        flash["description"] = "Gemini Flash generation family; Medium is the configured runtime default"
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp = profiles_path.with_name(f".{profiles_path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(profiles, indent=2, sort_keys=True) + "\n")
-        os.chmod(tmp, 0o600)
-        tmp.replace(profiles_path)
-    return {"catalogue_entries": len(updated), "profile_updated": flash is not None and "3.7" in generation_entries, "path": str(catalogue_path)}
+    save_profiles(profiles_path, profiles)
+    return {
+        "catalogue_entries": len(updated),
+        "added_candidates": merged["added_candidates"],
+        "updated_candidates": merged["updated_candidates"],
+        "profile_updated": bool(merged["registered_identity_keys"]),
+        "path": str(catalogue_path),
+    }
 
 
 def discover_models() -> dict[str, Any]:

@@ -18,6 +18,7 @@ enabled, so re-enabling the provider later restores them automatically.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import shutil
 from typing import Any
 
 from . import routing
@@ -162,12 +163,12 @@ def _row_height(row: Row) -> int:
     return 1 + len(row.details)
 
 
-def _render(stdscr, rows: list[Row], cursor: int) -> None:
+def _render(stdscr, rows: list[Row], cursor: int, *, title: str = "Ekalavya Availability") -> None:
     import curses
 
     stdscr.erase()
     height, width = stdscr.getmaxyx()
-    stdscr.addstr(0, 0, "Ekalavya Availability"[: max(1, width - 1)], curses.A_BOLD)
+    stdscr.addstr(0, 0, title[: max(1, width - 1)], curses.A_BOLD)
     screen_lines: list[tuple[str, int, int | None]] = []
     section_titles = (("providers", "Providers"), ("models", "Models"), ("vllm", "Routes / vLLM"))
     for section, title in section_titles:
@@ -227,13 +228,13 @@ def _prompt_reason(stdscr) -> str | None:
     return raw.strip() or None
 
 
-def _loop(stdscr, rows: list[Row]) -> list[Row] | None:
+def _loop(stdscr, rows: list[Row], *, title: str = "Ekalavya Availability") -> list[Row] | None:
     import curses
 
     curses.curs_set(0)
     cursor = 0
     while True:
-        _render(stdscr, rows, cursor)
+        _render(stdscr, rows, cursor, title=title)
         key = stdscr.getch()
         if key in (curses.KEY_UP, ord("k")):
             cursor = max(0, cursor - 1)
@@ -268,3 +269,77 @@ def run_interactive_config() -> int:
     for line in changes:
         print(f"  {line}")
     return 0
+
+
+def setup_detection(which=shutil.which) -> dict[str, dict[str, object]]:
+    """Report executable presence only; authentication is intentionally unknown."""
+    result: dict[str, dict[str, object]] = {}
+    for provider in PROVIDER_ORDER:
+        executables = sorted({routing.ROUTE_EXECUTABLE[route] for route in routing.MODELS if routing.ROUTE_PROVIDER[route] == provider and routing.ROUTE_EXECUTABLE[route]})
+        found = [name for name in executables if which(name)]
+        result[provider] = {
+            "label": PROVIDER_LABELS[provider],
+            "executables": executables,
+            "detected": bool(found),
+            "detected_executables": found,
+            "authentication": "not checked",
+        }
+    return result
+
+
+def setup_readiness(config: dict[str, Any], detection: dict[str, dict[str, object]]) -> dict[str, object]:
+    """Keep configured selection separate from executable/auth readiness."""
+    providers: list[dict[str, object]] = []
+    warnings: list[str] = []
+    for provider in PROVIDER_ORDER:
+        selected = bool(config["providers"][provider].get("enabled", True))
+        models = [name for name in routing.MODELS if routing.ROUTE_PROVIDER[name] == provider and config["models"][name].get("enabled", True)]
+        if selected and not models:
+            warnings.append(f"{PROVIDER_LABELS[provider]} is selected with no enabled model profiles")
+        providers.append({
+            "provider": provider,
+            "label": PROVIDER_LABELS[provider],
+            "selected": selected,
+            "selected_models": models,
+            "detected": detection[provider]["detected"],
+            "authentication": "not checked",
+        })
+    return {"providers": providers, "warnings": warnings}
+
+
+def build_setup_rows(config: dict[str, Any], detection: dict[str, dict[str, object]], vllm_routes: dict[str, VLLMRouteInfo] | None = None) -> list[Row]:
+    """Reuse availability rows while adding advisory setup information."""
+    rows: list[Row] = []
+    for row in build_rows(config, vllm_routes):
+        if row.kind == "provider":
+            item = detection[row.name]
+            state = "detected" if item["detected"] else "not detected / optional"
+            rows.append(replace(row, details=(f"harness: {state}", "authentication: not checked")))
+        elif row.kind == "model":
+            rows.append(replace(row, details=(f"profile id: {row.name}",)))
+        else:
+            rows.append(row)
+    return rows
+
+
+def run_interactive_setup() -> dict[str, object]:
+    """Stage onboarding choices in the existing checkbox UI and save on demand."""
+    import curses
+
+    config = load_config()
+    detection = setup_detection()
+    rows = build_setup_rows(config, detection, inspect_vllm_routes())
+    result = curses.wrapper(lambda stdscr: _loop(stdscr, rows, title="Ekalavya Setup"))
+    if result is None:
+        return {"cancelled": True, "changed": False, "readiness": setup_readiness(config, detection)}
+    updated = rows_to_config(config, result)
+    changes = diff_summary(config, result)
+    if changes:
+        save_config(updated)
+    return {
+        "cancelled": False,
+        "changed": bool(changes),
+        "changes": changes,
+        "config": updated,
+        "readiness": setup_readiness(updated, detection),
+    }
