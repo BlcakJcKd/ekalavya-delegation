@@ -3,19 +3,23 @@ import unittest
 import json
 import hashlib
 import zipfile
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from benchmark.adapters import AntigravityAdapter
 from benchmark.public_characterization.evaluate import evaluate
 from benchmark.public_characterization.generate import make_instance, manifest, materialize, workspace_digest
-from benchmark.public_characterization.runner import check_local_suite
+from benchmark.public_characterization.runner import _update_profile_catalogue, check_local_suite
 from benchmark.public_characterization.audit import _matrix
 from benchmark.provenance import ProvenanceError, validate_git_identity
 from benchmark.review_bundle import create_review_bundle
 from ekalavya.catalogue import canonicalize_gemini_flash_generations, expand_runtime_variants
+from ekalavya.config import ensure_control_files, load_profiles
 from ekalavya.harness_registry import current_registry, validate_registry
 from ekalavya.schema import CandidateIdentity, RunIntent
 from ekalavya.resolver import resolve
+from delegation.config import default_config, save_config
 
 
 class PublicCharacterizationTests(unittest.TestCase):
@@ -68,6 +72,27 @@ class PublicCharacterizationTests(unittest.TestCase):
         result = resolve(RunIntent("flash", provider="gemini", reasoning="high"), profile, entries)
         self.assertEqual(result.state, "resolved")
         self.assertEqual(result.candidate.provider_model_id, "gemini-3.7-flash-high")
+        newer = canonicalize_gemini_flash_generations([], discovered, observed_at=observed, serving_engine_version="1.1.28")
+        self.assertEqual({item["generation"]: item["identity_key"] for item in entries}, {item["generation"]: item["identity_key"] for item in newer})
+
+    def test_real_profile_catalogue_update_path_uses_merge_contract_and_saves_state(self):
+        discovered = [{"provider_model_id": f"gemini-{generation}-flash-{reasoning}", "display_name": f"Gemini {generation} Flash ({reasoning})"} for generation in ("3.6", "3.7", "3.8") for reasoning in ("low", "medium", "high")]
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}, clear=False):
+                config_root = root / "config" / "ekalavya"
+                config_root.mkdir(parents=True)
+                save_config(default_config())
+                ensure_control_files(config_root)
+                result = _update_profile_catalogue(discovered, "2026-09-08T12:00:00+00:00", "1.1.27")
+                catalogue = json.loads((config_root / "catalogue.json").read_text())
+                self.assertEqual(result["catalogue_entries"], len(catalogue))
+                self.assertEqual(result["added_candidates"], 2)
+                self.assertTrue(result["profile_updated"])
+                profile = next(item for item in load_profiles(config_root / "profiles.json") if item["name"] == "flash")
+                self.assertEqual(profile["default_reasoning"], "medium")
+                candidate_key = next(entry["identity_key"] for entry in catalogue if entry.get("generation") == "3.8")
+                self.assertIn(candidate_key, profile["permitted_candidates"])
 
 
 class HarnessRegistryTests(unittest.TestCase):

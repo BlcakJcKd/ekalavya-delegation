@@ -127,6 +127,9 @@ from ekalavya.config import ensure_control_files
 from pathlib import Path
 config_dir = Path(r'''$CONFIG_DIR''')
 result = ensure_control_files(config_dir)
+if result.get('status') == 'incomplete':
+    missing = ', '.join(result.get('missing', []))
+    raise SystemExit(f"Incomplete Ekalavya control-file pair; missing {missing}. Existing files were left untouched.")
 for name in result['created']:
     print(f'Created default control file: {config_dir / name}')
 for name in result['skipped']:

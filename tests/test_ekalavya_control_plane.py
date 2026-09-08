@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from ekalavya.catalogue import PROMOTION_BASES, add_candidate, promote, selectable
 from ekalavya.config import ensure_control_files, migrate_legacy_config
+from ekalavya.migrate import migrate_all
 from ekalavya.ledger import SCHEMA_SQL, connect, import_legacy_state, record_benchmark_suite, record_benchmark_suite_correction, record_benchmark_task, record_cost, record_default_change, record_harness, record_price_snapshot, record_promotion_event, record_request_metric, record_run, record_task_attempt, upsert_model
 from ekalavya.resolver import resolve
 from ekalavya.schema import CandidateIdentity, RunIntent
@@ -180,21 +181,60 @@ class EkalavyaControlPlaneTests(unittest.TestCase):
 
     def test_control_file_migration_is_additive_and_explicit(self):
         with tempfile.TemporaryDirectory() as d:
-            report = ensure_control_files(Path(d)); self.assertEqual(set(report["created"]), {"catalogue.json", "profiles.json"})
-            self.assertGreater(len(json.loads((Path(d) / "catalogue.json").read_text())), 1)
-            self.assertNotIn("Migrated", (Path(d) / "profiles.json").read_text())
-            self.assertEqual(ensure_control_files(Path(d))["created"], [])
+            root = Path(d)
+            report = ensure_control_files(root); self.assertEqual(set(report["created"]), {"catalogue.json", "profiles.json"})
+            self.assertGreater(len(json.loads((root / "catalogue.json").read_text())), 1)
+            self.assertNotIn("Migrated", (root / "profiles.json").read_text())
+            self.assertEqual((root / "catalogue.json").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((root / "profiles.json").stat().st_mode & 0o777, 0o600)
+            self.assertEqual(ensure_control_files(root)["created"], [])
 
-    def test_bootstrap_fills_only_the_missing_control_file(self):
+    def test_bootstrap_leaves_both_existing_control_files_byte_identical(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            ensure_control_files(root)
+            original_catalogue = (root / "catalogue.json").read_bytes()
+            original_profiles = (root / "profiles.json").read_bytes()
+            report = ensure_control_files(root)
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual((root / "catalogue.json").read_bytes(), original_catalogue)
+            self.assertEqual((root / "profiles.json").read_bytes(), original_profiles)
+
+    def test_bootstrap_reports_catalogue_only_incomplete_pair_without_rewriting(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             ensure_control_files(root)
             original = (root / "catalogue.json").read_bytes()
             (root / "profiles.json").unlink()
             report = ensure_control_files(root)
-            self.assertEqual(report["created"], ["profiles.json"])
+            self.assertEqual(report["created"], [])
             self.assertEqual(report["skipped"], ["catalogue.json"])
+            self.assertEqual(report["status"], "incomplete")
+            self.assertEqual(report["missing"], ["profiles.json"])
             self.assertEqual((root / "catalogue.json").read_bytes(), original)
+
+    def test_bootstrap_reports_profiles_only_incomplete_pair_without_rewriting(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            ensure_control_files(root)
+            original = (root / "profiles.json").read_bytes()
+            (root / "catalogue.json").unlink()
+            report = ensure_control_files(root)
+            self.assertEqual(report["created"], [])
+            self.assertEqual(report["skipped"], ["profiles.json"])
+            self.assertEqual(report["status"], "incomplete")
+            self.assertEqual(report["missing"], ["catalogue.json"])
+            self.assertEqual((root / "profiles.json").read_bytes(), original)
+
+    def test_explicit_migration_stops_before_state_import_for_incomplete_pair(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            ensure_control_files(root)
+            (root / "profiles.json").unlink()
+            report = migrate_all(legacy_config=root / "absent-legacy", new_config=root, legacy_state=root / "absent-state", db=root / "ledger.sqlite3")
+            self.assertEqual(report["config"]["control_files"]["status"], "incomplete")
+            self.assertEqual(report["state"]["skipped"], "incomplete catalogue/profiles pair")
+            self.assertFalse((root / "ledger.sqlite3").exists())
 
 
 if __name__ == "__main__":

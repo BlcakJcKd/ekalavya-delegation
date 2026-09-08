@@ -68,7 +68,7 @@ def _refresh_gemini_catalogue() -> dict[str, Any]:
         if not entry:
             continue
         identity = CandidateIdentity(**{name: entry.get(name) for name in CandidateIdentity.__dataclass_fields__})
-        model_id = upsert_model(conn, identity, lifecycle=str(entry.get("lifecycle", "candidate")), discovered_at=str(discovery["observed_at"]))
+        model_id = upsert_model(conn, identity, identity_key=str(entry["identity_key"]), lifecycle=str(entry.get("lifecycle", "candidate")), discovered_at=str(discovery["observed_at"]))
         record_availability(conn, model_id, state="available", observed_at=str(discovery["observed_at"]), source="agy models", details={"provider_model_id": identity.provider_model_id, "client_version": discovery["client_version"]})
     return {
         **discovery,
@@ -275,7 +275,13 @@ def cmd_models(args: argparse.Namespace) -> int:
 
 def cmd_config(args: argparse.Namespace) -> int:
     if getattr(args, "action", None) == "migrate":
-        result = migrate_all(); _json_or_text(result, args.json); return 0
+        result = migrate_all()
+        control = result.get("config", {}).get("control_files", {})
+        _json_or_text(result, args.json)
+        if control.get("status") == "incomplete":
+            print("config migration stopped: incomplete catalogue/profiles pair; restore the missing file explicitly", file=sys.stderr)
+            return 2
+        return 0
     try:
         config = load_config()
     except ValueError as exc:
@@ -378,7 +384,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if default_db_path().exists():
         try: integrity = connect().execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         except sqlite3.DatabaseError: integrity = False
-    checks = {"config_dir_private": root.exists() and (root.stat().st_mode & 0o777) == 0o700 if root.exists() else True, "catalogue_readable": not cat.exists() or cat.is_file(), "profiles_readable": not prof.exists() or prof.is_file(), "availability_config_readable": not (root / "config.toml").exists() or (root / "config.toml").is_file(), "ledger_parent": default_db_path().parent.exists(), "ledger_integrity": integrity}
+    checks = {"config_dir_private": root.exists() and (root.stat().st_mode & 0o777) == 0o700 if root.exists() else True, "catalogue_readable": not cat.exists() or cat.is_file(), "profiles_readable": not prof.exists() or prof.is_file(), "control_file_pair_complete": cat.exists() == prof.exists(), "availability_config_readable": not (root / "config.toml").exists() or (root / "config.toml").is_file(), "ledger_parent": default_db_path().parent.exists(), "ledger_integrity": integrity}
     _json_or_text(checks, args.json); return 0 if all(checks.values()) else 1
 
 

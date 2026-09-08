@@ -92,6 +92,13 @@ def ensure_control_files(target: Path | None = None) -> dict[str, object]:
     """Create additive Ekalavya catalogue/profile files from fixed route metadata."""
     target = target or config_root(); target.mkdir(parents=True, exist_ok=True, mode=0o700); os.chmod(target, 0o700)
     catalogue_path, profiles_path = target / "catalogue.json", target / "profiles.json"
+    catalogue_exists, profiles_exist = catalogue_path.exists(), profiles_path.exists()
+    if catalogue_exists != profiles_exist:
+        present = [name for name, exists in (("catalogue.json", catalogue_exists), ("profiles.json", profiles_exist)) if exists]
+        missing = [name for name, exists in (("catalogue.json", catalogue_exists), ("profiles.json", profiles_exist)) if not exists]
+        return {"created": [], "skipped": present, "status": "incomplete", "missing": missing}
+    if catalogue_exists and profiles_exist:
+        return {"created": [], "skipped": ["catalogue.json", "profiles.json"], "status": "complete"}
     from delegation import routing
     from delegation.core import DELEGATES
     catalogue=[]; profiles=[]
@@ -102,15 +109,9 @@ def ensure_control_files(target: Path | None = None) -> dict[str, object]:
         profiles.append({"name": route, "description": f"Stable explicit route {route}", "default_identity_key": identity.identity_key, "permitted_candidates": [identity.identity_key], "reasoning_policy": "fixed", "default_reasoning": spec.effort})
     created: list[str] = []
     skipped: list[str] = []
-    if catalogue_path.exists():
-        skipped.append("catalogue.json")
-    else:
-        from .catalogue import save_catalogue
-        save_catalogue(catalogue_path, catalogue)
-        created.append("catalogue.json")
-    if profiles_path.exists():
-        skipped.append("profiles.json")
-    else:
-        save_profiles(profiles, profiles_path)
-        created.append("profiles.json")
-    return {"created": created, "skipped": skipped}
+    from .catalogue import save_catalogue
+    save_catalogue(catalogue_path, catalogue)
+    created.append("catalogue.json")
+    save_profiles(profiles, profiles_path)
+    created.append("profiles.json")
+    return {"created": created, "skipped": skipped, "status": "complete"}

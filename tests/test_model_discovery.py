@@ -14,14 +14,20 @@ from ekalavya.catalogue import load_catalogue
 from ekalavya.cli import main
 from ekalavya.config import ensure_control_files, load_profiles
 from ekalavya.discovery import DiscoveryError, gemini_flash_generations, parse_agy_models
+from ekalavya.ledger import connect
 
 
-def discovery(timestamp: str = "2026-09-08T12:00:00+00:00") -> dict[str, object]:
+def discovery(
+    timestamp: str = "2026-09-08T12:00:00+00:00",
+    *,
+    version: str = "1.1.27",
+    generations: tuple[str, ...] = ("3.6", "3.7", "3.8"),
+) -> dict[str, object]:
     return {
-        "provider": "gemini", "client": "agy", "client_version": "1.1.27", "observed_at": timestamp,
+        "provider": "gemini", "client": "agy", "client_version": version, "observed_at": timestamp,
         "models": [
             {"provider_model_id": f"gemini-{generation}-flash-{reasoning}", "display_name": f"Gemini {generation} Flash ({reasoning.title()})"}
-            for generation in ("3.6", "3.7", "3.8") for reasoning in ("low", "medium", "high")
+            for generation in generations for reasoning in ("low", "medium", "high")
         ],
     }
 
@@ -43,9 +49,9 @@ class GeminiDiscoveryTests(unittest.TestCase):
         self.env.stop()
         self.temp.cleanup()
 
-    def _refresh(self) -> tuple[int, str, str]:
+    def _refresh(self, result: dict[str, object] | None = None) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
-        with patch("ekalavya.cli.discover_gemini", return_value=discovery()), redirect_stdout(out), redirect_stderr(err):
+        with patch("ekalavya.cli.discover_gemini", return_value=result or discovery()), redirect_stdout(out), redirect_stderr(err):
             code = main(["models", "refresh", "--provider", "gemini", "--json"])
         return code, out.getvalue(), err.getvalue()
 
@@ -78,6 +84,48 @@ class GeminiDiscoveryTests(unittest.TestCase):
         candidate = next(e for e in second if e.get("generation") == "3.8")
         self.assertEqual(candidate["lifecycle"], "candidate")
         self.assertEqual(len([e for e in second if e.get("generation") == "3.8"]), 1)
+
+    def test_agy_upgrade_reuses_each_logical_generation_and_historical_provenance(self):
+        self.assertEqual(self._refresh(discovery(version="1.1.27"))[0], 0)
+        first = {entry["generation"]: entry for entry in load_catalogue(self.catalogue) if entry.get("generation")}
+        self.assertEqual(self._refresh(discovery(version="1.1.28", timestamp="2026-09-08T13:00:00+00:00"))[0], 0)
+        second_entries = load_catalogue(self.catalogue)
+        second = {entry["generation"]: entry for entry in second_entries if entry.get("generation")}
+        self.assertEqual({generation: sum(entry.get("generation") == generation for entry in second_entries) for generation in ("3.6", "3.8")}, {"3.6": 1, "3.8": 1})
+        for generation in ("3.6", "3.8"):
+            self.assertEqual(second[generation]["identity_key"], first[generation]["identity_key"])
+            self.assertEqual(second[generation]["serving_engine_version"], "1.1.27")
+            self.assertEqual(second[generation]["discovery_client_version"], "1.1.28")
+        rows = connect().execute("SELECT generation, COUNT(*) FROM models WHERE provider=? AND family=? GROUP BY generation", ("gemini", "flash")).fetchall()
+        self.assertEqual({row[0]: row[1] for row in rows if row[0] in {"3.6", "3.8"}}, {"3.6": 1, "3.8": 1})
+
+    def test_promoted_generation_stays_current_and_default_after_agy_upgrade(self):
+        self.assertEqual(self._refresh(discovery(version="1.1.27"))[0], 0)
+        candidate = next(entry for entry in load_catalogue(self.catalogue) if entry.get("generation") == "3.8")
+        self.assertEqual(main(["models", "promote", candidate["identity_key"], "--basis", "manual", "--promotion-reason", "explicit test", "--set-default", "--profile", "flash"]), 0)
+        promoted_profile = next(profile for profile in load_profiles(self.profiles) if profile["name"] == "flash")
+        promoted_key = candidate["identity_key"]
+        self.assertEqual(promoted_profile["default_identity_key"], promoted_key)
+        self.assertEqual(self._refresh(discovery(version="1.1.28", timestamp="2026-09-08T13:00:00+00:00"))[0], 0)
+        entries = load_catalogue(self.catalogue)
+        promoted = [entry for entry in entries if entry.get("generation") == "3.8"]
+        self.assertEqual(len(promoted), 1)
+        self.assertEqual(promoted[0]["identity_key"], promoted_key)
+        self.assertEqual(promoted[0]["lifecycle"], "current")
+        self.assertEqual(promoted[0]["promotion_basis"], "manual")
+        self.assertEqual(promoted[0]["promotion_reason"], "explicit test")
+        self.assertEqual(sum(entry.get("lifecycle") == "current" for entry in entries if entry.get("provider") == "gemini" and entry.get("family") == "flash"), 1)
+        profile = next(profile for profile in load_profiles(self.profiles) if profile["name"] == "flash")
+        self.assertEqual(profile["default_identity_key"], promoted_key)
+        self.assertEqual(profile["default_reasoning"], "medium")
+
+    def test_complete_future_generation_is_registered_as_one_candidate(self):
+        self.assertEqual(self._refresh(discovery(generations=("3.6", "3.7", "3.8", "3.9")))[0], 0)
+        entries = load_catalogue(self.catalogue)
+        future = [entry for entry in entries if entry.get("generation") == "3.9"]
+        self.assertEqual(len(future), 1)
+        self.assertEqual(future[0]["lifecycle"], "candidate")
+        self.assertEqual({item["provider_model_id"] for item in future[0]["runtime_variants"]}, {f"gemini-3.9-flash-{reasoning}" for reasoning in ("low", "medium", "high")})
 
     def test_failed_discovery_leaves_control_files_unchanged(self):
         before_catalogue, before_profiles = self.catalogue.read_bytes(), self.profiles.read_bytes()

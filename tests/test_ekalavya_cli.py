@@ -108,6 +108,18 @@ class EkalavyaCliTests(unittest.TestCase):
                     self.assertIn(text, error.getvalue())
                 self.assertFalse((root / "config" / "ekalavya" / "config.toml").exists())
 
+    def test_doctor_reports_incomplete_control_file_pair(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._files(root)
+            (root / "config" / "ekalavya" / "profiles.json").unlink()
+            (root / "state" / "ekalavya").mkdir(parents=True)
+            with self._xdg(root):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(main(["doctor", "--json"]), 1)
+            self.assertFalse(json.loads(output.getvalue())["control_file_pair_complete"])
+
     def test_public_package_scripts_are_exactly_ekalavya_and_eka(self):
         import tomllib
         metadata = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())

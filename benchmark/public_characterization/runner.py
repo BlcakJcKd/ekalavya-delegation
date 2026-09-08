@@ -84,14 +84,14 @@ def _update_profile_catalogue(discovered: list[dict[str, str]], observed_at: str
     entries = load_catalogue(catalogue_path)
     updated, merged = merge_gemini_flash_discovery(entries, discovered, observed_at=observed_at, serving_engine_version=version)
     profiles = load_profiles(profiles_path)
-    profiles = permit_profile_candidates(profiles, "flash", merged["registered_identity_keys"])
+    profiles = permit_profile_candidates(profiles, "flash", merged["registered"])
     save_catalogue(catalogue_path, updated)
-    save_profiles(profiles_path, profiles)
+    save_profiles(profiles, profiles_path)
     return {
         "catalogue_entries": len(updated),
-        "added_candidates": merged["added_candidates"],
-        "updated_candidates": merged["updated_candidates"],
-        "profile_updated": bool(merged["registered_identity_keys"]),
+        "added_candidates": len(merged["added"]),
+        "updated_candidates": len(merged["updated"]),
+        "profile_updated": bool(merged["registered"]),
         "path": str(catalogue_path),
     }
 

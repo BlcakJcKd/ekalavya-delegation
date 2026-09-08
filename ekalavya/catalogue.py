@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,8 @@ from .schema import CandidateIdentity
 LIVE_STATES = {"candidate", "current", "previous"}
 ALL_STATES = LIVE_STATES | {"retired", "rejected", "removed"}
 PROMOTION_BASES = {"quality_superiority", "operational_efficiency", "manual", "unspecified"}
+_GEMINI_FLASH_ID = re.compile(r"^gemini-(?P<generation>\d+\.\d+)-flash-(?P<reasoning>low|medium|high)$")
+_BOOTSTRAP_LIFECYCLE = {"3.6": "previous", "3.7": "current"}
 
 
 def _private_dir(path: Path) -> None:
@@ -97,6 +100,71 @@ def expand_runtime_variants(entries: list[dict[str, Any]]) -> list[dict[str, Any
     return expanded
 
 
+def _gemini_flash_generation(value: dict[str, Any] | str) -> str | None:
+    if isinstance(value, dict):
+        if value.get("provider") != "gemini" or value.get("family") != "flash":
+            return None
+        generation = value.get("generation")
+        if generation:
+            return str(generation)
+        value = str(value.get("provider_model_id", ""))
+    match = _GEMINI_FLASH_ID.fullmatch(value)
+    return match.group("generation") if match else None
+
+
+def _stable_gemini_flash_key(identity: CandidateIdentity) -> str:
+    """Hash lifecycle identity fields while excluding harness version provenance."""
+    version_neutral = CandidateIdentity(
+        **{name: (None if name == "serving_engine_version" else getattr(identity, name)) for name in CandidateIdentity.__dataclass_fields__}
+    )
+    return version_neutral.identity_key
+
+
+def _gemini_flash_record(
+    generation: str,
+    variants: list[dict[str, str]],
+    *,
+    observed_at: str,
+    serving_engine_version: str | None,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    variants = sorted(variants, key=lambda item: item["provider_model_id"])
+    medium = next((item for item in variants if item["provider_model_id"].endswith("-medium")), variants[0])
+    identity = CandidateIdentity(
+        provider="gemini", family="flash", provider_model_id=medium["provider_model_id"],
+        display_name=f"Gemini {generation} Flash", generation=generation, variant="medium",
+        capabilities={"reasoning_values": [item["provider_model_id"].rsplit("-", 1)[-1] for item in variants]},
+        serving_engine="agy", serving_engine_version=serving_engine_version,
+    )
+    incoming = identity.as_dict()
+    incoming.update({
+        "identity_key": _stable_gemini_flash_key(identity),
+        "catalogue_key": f"gemini:flash:{generation}",
+        "lifecycle_scope": "generation_family",
+        "lifecycle": _BOOTSTRAP_LIFECYCLE.get(generation, "candidate"),
+        "default_runtime_variant": "medium",
+        "runtime_variants": [
+            {"provider_model_id": item["provider_model_id"], "display_name": item.get("display_name"), "reasoning": item["provider_model_id"].rsplit("-", 1)[-1]}
+            for item in variants
+        ],
+        "discovery_source": "agy models",
+        "discovery_timestamp": observed_at,
+        "availability_observed_at": observed_at,
+        "discovery_client_version": serving_engine_version,
+        "transport": "agy",
+    })
+    if existing is None:
+        return incoming
+
+    merged = dict(existing)
+    # serving_engine_version is historical identity provenance.  The latest
+    # observation is recorded separately in discovery_client_version.
+    for name, value in incoming.items():
+        if name not in {"identity_key", "lifecycle", "serving_engine_version"}:
+            merged[name] = value
+    return merged
+
+
 def canonicalize_gemini_flash_generations(
     entries: list[dict[str, Any]],
     discovered: list[dict[str, str]],
@@ -105,51 +173,32 @@ def canonicalize_gemini_flash_generations(
     serving_engine_version: str | None = None,
 ) -> list[dict[str, Any]]:
     """Store Gemini Flash lifecycle by generation, with exact runtime variants."""
-    generations = {"3.6": "previous", "3.7": "current", "3.8": "candidate"}
-    discovered_by_generation: dict[str, list[dict[str, str]]] = {generation: [] for generation in generations}
+    discovered_by_generation: dict[str, list[dict[str, str]]] = {}
     for item in discovered:
         model_id = item.get("provider_model_id", "")
-        parts = model_id.split("-")
-        if len(parts) == 4 and parts[0] == "gemini" and parts[2] == "flash" and parts[1] in generations:
-            discovered_by_generation[parts[1]].append(item)
-    def is_flash_generation_entry(entry: dict[str, Any]) -> bool:
-        if entry.get("provider") != "gemini" or entry.get("family") != "flash":
-            return False
-        model_id = entry.get("provider_model_id", "")
-        return entry.get("generation") in generations or any(model_id.startswith(f"gemini-{generation}-flash-") for generation in generations)
-
-    existing = [e for e in entries if not is_flash_generation_entry(e)]
-    result = list(existing)
-    for generation, lifecycle in generations.items():
-        variants = sorted(discovered_by_generation[generation], key=lambda item: item["provider_model_id"])
-        if not variants:
+        match = _GEMINI_FLASH_ID.fullmatch(model_id)
+        if match:
+            discovered_by_generation.setdefault(match.group("generation"), []).append(item)
+    result = [dict(entry) for entry in entries]
+    existing_by_generation = {
+        generation: index
+        for index, entry in enumerate(result)
+        if (generation := _gemini_flash_generation(entry)) is not None
+    }
+    for generation in sorted(discovered_by_generation):
+        if not discovered_by_generation[generation]:
             continue
-        medium = next((item for item in variants if item["provider_model_id"].endswith("-medium")), variants[0])
-        old = next((e for e in entries if e.get("provider") == "gemini" and e.get("family") == "flash" and (e.get("generation") == generation or e.get("provider_model_id", "").startswith(f"gemini-{generation}-flash-"))), {})
-        identity = CandidateIdentity(
-            provider="gemini", family="flash", provider_model_id=medium["provider_model_id"],
-            display_name=f"Gemini {generation} Flash", generation=generation, variant="medium",
-            capabilities={"reasoning_values": [item["provider_model_id"].rsplit("-", 1)[-1] for item in variants]},
-            serving_engine="agy", serving_engine_version=serving_engine_version,
+        index = existing_by_generation.get(generation)
+        existing = result[index] if index is not None else None
+        item = _gemini_flash_record(
+            generation, discovered_by_generation[generation], observed_at=observed_at,
+            serving_engine_version=serving_engine_version, existing=existing,
         )
-        item = dict(old)
-        item.update(identity.as_dict())
-        item.update({
-            "identity_key": identity.identity_key,
-            "catalogue_key": f"gemini:flash:{generation}",
-            "lifecycle_scope": "generation_family",
-            "lifecycle": lifecycle,
-            "default_runtime_variant": "medium",
-            "runtime_variants": [
-                {"provider_model_id": variant["provider_model_id"], "display_name": variant.get("display_name"), "reasoning": variant["provider_model_id"].rsplit("-", 1)[-1]}
-                for variant in variants
-            ],
-            "discovery_source": "agy models",
-            "discovery_timestamp": observed_at,
-            "availability_observed_at": observed_at,
-            "transport": "agy",
-        })
-        result.append(item)
+        if existing is None:
+            result.append(item)
+            existing_by_generation[generation] = len(result) - 1
+        else:
+            result[index] = item
     return result
 
 
@@ -171,57 +220,43 @@ def merge_gemini_flash_discovery(
         [], discovered, observed_at=observed_at, serving_engine_version=serving_engine_version,
     )
     result = [dict(entry) for entry in entries]
-    exact = {entry.get("identity_key"): index for index, entry in enumerate(result)}
-    has_seed_37 = any(
-        entry.get("provider") == "gemini"
-        and entry.get("family") == "flash"
-        and str(entry.get("provider_model_id", "")).startswith("gemini-3.7-flash-")
-        and not entry.get("generation")
-        for entry in result
-    )
+    existing_by_generation = {
+        generation: index
+        for index, entry in enumerate(result)
+        if (generation := _gemini_flash_generation(entry)) is not None
+    }
     added: list[str] = []
     updated: list[str] = []
     registered: list[str] = []
     for incoming in canonical:
         generation = incoming.get("generation")
-        # Keep the deterministic bootstrap current identity as the sole 3.7
-        # current anchor.  Record availability facts on it without replacing
-        # its identity or changing profile/default policy.
-        if generation == "3.7" and has_seed_37:
-            seed_index = next(i for i, entry in enumerate(result) if entry.get("provider") == "gemini" and entry.get("family") == "flash" and str(entry.get("provider_model_id", "")).startswith("gemini-3.7-flash-") and not entry.get("generation"))
-            seed = dict(result[seed_index])
-            seed.update({
-                "discovery_source": "agy models",
-                "discovery_timestamp": observed_at,
-                "availability_observed_at": observed_at,
-                "discovered_runtime_variants": incoming["runtime_variants"],
-                "discovery_client_version": serving_engine_version,
-            })
-            if seed != result[seed_index]:
-                result[seed_index] = seed
-                updated.append(str(seed.get("identity_key")))
-            registered.append(str(seed.get("identity_key")))
-            continue
-        key = incoming["identity_key"]
-        if key in exact:
-            old = dict(result[exact[key]])
-            lifecycle = old.get("lifecycle", "candidate")
-            promotion = {name: old[name] for name in ("promotion_basis", "promotion_reason") if name in old}
-            old.update(incoming)
-            old["lifecycle"] = lifecycle
-            old.update(promotion)
-            if old != result[exact[key]]:
-                result[exact[key]] = old
+        index = existing_by_generation.get(generation)
+        if index is not None:
+            old = dict(result[index])
+            if generation == "3.7" and not old.get("generation"):
+                refreshed = dict(old)
+                refreshed.update({
+                    "discovery_source": "agy models",
+                    "discovery_timestamp": observed_at,
+                    "availability_observed_at": observed_at,
+                    "discovered_runtime_variants": incoming["runtime_variants"],
+                    "discovery_client_version": serving_engine_version,
+                })
+            else:
+                refreshed = _gemini_flash_record(
+                    generation, incoming["runtime_variants"], observed_at=observed_at,
+                    serving_engine_version=serving_engine_version, existing=old,
+                )
+            key = str(old.get("identity_key"))
+            if refreshed != old:
+                result[index] = refreshed
                 updated.append(key)
             registered.append(key)
             continue
-        # The repository lifecycle seed is explicit only for historical 3.6;
-        # every newly observed generation (including 3.8 and later) is a
-        # candidate until the user promotes it.
         item = dict(incoming)
-        item["lifecycle"] = "previous" if generation == "3.6" else "candidate"
         result.append(item)
-        exact[key] = len(result) - 1
+        key = str(item["identity_key"])
+        existing_by_generation[generation] = len(result) - 1
         added.append(key)
         registered.append(key)
     return result, {"added": added, "updated": updated, "registered": registered}

@@ -136,7 +136,14 @@ def record_price_snapshot(conn: sqlite3.Connection, provider: str, effective_at:
     return int(row)
 
 
-def upsert_model(conn: sqlite3.Connection, identity: CandidateIdentity, *, lifecycle: str = "candidate", discovered_at: str | None = None) -> int:
+def upsert_model(
+    conn: sqlite3.Connection,
+    identity: CandidateIdentity,
+    *,
+    lifecycle: str = "candidate",
+    discovered_at: str | None = None,
+    identity_key: str | None = None,
+) -> int:
     """Insert a model identity without fabricating provider metadata."""
     if lifecycle not in {"candidate", "current", "previous", "retired", "rejected", "removed"}:
         raise ValueError(f"invalid lifecycle: {lifecycle}")
@@ -145,10 +152,11 @@ def upsert_model(conn: sqlite3.Connection, identity: CandidateIdentity, *, lifec
         conn.execute("INSERT OR IGNORE INTO model_families(provider,family_key,display_name) VALUES(?,?,?)", (identity.provider, identity.family, identity.display_name))
         family_id = conn.execute("SELECT id FROM model_families WHERE provider=? AND family_key=?", (identity.provider, identity.family)).fetchone()[0]
     values = identity.as_dict()
+    stored_identity_key = identity_key or identity.identity_key
     conn.execute("""INSERT INTO models(identity_key,provider,family_id,family,provider_model_id,display_name,generation,variant,capabilities_json,architecture,parameter_count,active_parameter_count,quantization,serving_engine,serving_engine_version,hardware_profile,lifecycle,discovered_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET lifecycle=excluded.lifecycle, discovered_at=COALESCE(excluded.discovered_at,models.discovered_at)""", (identity.identity_key, values["provider"], family_id, values["family"], values["provider_model_id"], values["display_name"], values["generation"], values["variant"], json.dumps(values["capabilities"], sort_keys=True), values["architecture"], values["parameter_count"], values["active_parameter_count"], values["quantization"], values["serving_engine"], values["serving_engine_version"], values["hardware_profile"], lifecycle, discovered_at))
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET lifecycle=excluded.lifecycle, discovered_at=COALESCE(excluded.discovered_at,models.discovered_at)""", (stored_identity_key, values["provider"], family_id, values["family"], values["provider_model_id"], values["display_name"], values["generation"], values["variant"], json.dumps(values["capabilities"], sort_keys=True), values["architecture"], values["parameter_count"], values["active_parameter_count"], values["quantization"], values["serving_engine"], values["serving_engine_version"], values["hardware_profile"], lifecycle, discovered_at))
     conn.commit()
-    return int(conn.execute("SELECT id FROM models WHERE identity_key=?", (identity.identity_key,)).fetchone()[0])
+    return int(conn.execute("SELECT id FROM models WHERE identity_key=?", (stored_identity_key,)).fetchone()[0])
 
 
 def record_availability(conn: sqlite3.Connection, model_id: int, *, state: str, observed_at: str | None = None, source: str | None = None, details: dict[str, Any] | None = None) -> None:

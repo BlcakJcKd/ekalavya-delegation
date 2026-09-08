@@ -43,7 +43,7 @@ def parse_agy_models(stdout: str) -> list[dict[str, str]]:
             raise DiscoveryError(f"unrecognized AGY models output line: {line!r}")
         model_id, display_name = raw.split("\t", 1)
         model_id, display_name = model_id.strip(), display_name.strip()
-        if not model_id or not display_name or "\t" in model_id:
+        if not model_id or not display_name:
             raise DiscoveryError("malformed AGY models row")
         rows.append({"provider_model_id": model_id, "display_name": display_name})
     if not rows:
