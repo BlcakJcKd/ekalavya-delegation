@@ -5,9 +5,17 @@ This is the current Ekalavya setup path. It installs only the canonical
 
 ## 1. Checkout and prerequisites
 
-Clone the repository, enter it, and ensure Python 3.11+, `pipx`, and the
-provider clients required by the profiles you intend to use are available.
-Do not put credentials in the repository.
+For a public read-only installation, clone over HTTPS; no GitHub account or
+SSH key is required:
+
+```bash
+git clone https://github.com/BlcakJcKd/ekalavya-delegation.git
+cd ekalavya-delegation
+```
+
+Ensure Python 3.11+ and `pipx` are available. Provider clients required by
+profiles you intend to use are optional and can be installed separately. Do
+not put credentials in the repository.
 
 ## 2. Install
 
@@ -17,8 +25,10 @@ command -v ekalavya
 command -v eka
 ```
 
-The installer is safe to rerun. It does not alter provider authentication,
-model defaults, server settings, or GPU policy.
+The installer is safe to rerun. Core installation/configuration failures stop
+the installer; missing optional provider clients and development/test
+dependencies do not. It does not alter provider authentication, model
+defaults, server settings, or GPU policy.
 
 On a fresh machine it also creates deterministic `catalogue.json` and
 `profiles.json` control files from the versioned route metadata. Existing

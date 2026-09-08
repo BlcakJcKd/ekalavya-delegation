@@ -108,13 +108,28 @@ check`; it does not run Benchmark V2.
 
 ## Installation
 
-The supported user-level installation remains self-contained via pipx:
+For a public read-only checkout, no GitHub account or SSH key is required:
+
+```bash
+git clone https://github.com/BlcakJcKd/ekalavya-delegation.git
+cd ekalavya-delegation
+scripts/install-user-delegation.sh
+```
+
+The supported user-level installation is self-contained via pipx. Python 3.11+
+and `pipx` are required; provider CLIs are optional and are needed only for
+the corresponding profiles. Missing optional providers are reported as
+unavailable by Ekalavya and do not prevent the base installation.
 
 ```bash
 scripts/install-user-delegation.sh
 ```
 
 The installer does not require sudo, alter provider authentication, install a
-serving engine, or modify model/GPU settings. It copies the delegation skill
-instead of linking it into the checkout, so installed commands remain usable
-after the repository moves.
+serving engine, or modify model/GPU settings. It creates the default catalogue
+and profiles on a fresh machine, without migrating historical state. It copies
+the delegation skill instead of linking it into the checkout, so installed
+commands remain usable after the repository moves.
+
+Contributors with GitHub write access may use HTTPS or configure SSH for their
+own checkout; public users do not need maintainer authentication.

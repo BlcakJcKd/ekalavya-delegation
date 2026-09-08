@@ -132,6 +132,8 @@ class CodexRouteInstallAndMigrationTests(unittest.TestCase):
         self.assertIn("Canonical commands:", installer)
         self.assertIn("ensure_control_files", installer)
         self.assertIn("Existing control file found, left untouched", installer)
+        self.assertNotIn("python -m unittest discover", installer)
+        self.assertNotIn("python -m delegation.preflight", installer)
         self.assertNotIn("agent-delegation", installer)
 
 

@@ -1,16 +1,34 @@
 # User installation
 
-Ekalavya is the only supported operational delegation interface. Install the
-self-contained package with:
+Ekalavya is the only supported operational delegation interface. For a public
+read-only installation, use:
+
+```bash
+git clone https://github.com/BlcakJcKd/ekalavya-delegation.git
+cd ekalavya-delegation
+scripts/install-user-delegation.sh
+```
+
+The public clone requires no GitHub account or SSH key. Python 3.11+ and
+`pipx` are required; provider CLIs are optional and are needed only for the
+profiles you intend to use. For an existing checkout, run:
 
 ```bash
 scripts/install-user-delegation.sh
 ```
 
-The installer runs no-model tests and delegation preflight, installs the
-package with pipx, creates no credentials, and copies the canonical skill to
-`~/.agents/skills/delegation/SKILL.md`. If Claude discovery exists, it keeps
-`~/.claude/skills/delegation` linked to that canonical skill.
+The installer installs the package with pipx, creates no credentials, and
+copies the canonical skill to `~/.agents/skills/delegation/SKILL.md`. If Claude
+discovery exists, it keeps `~/.claude/skills/delegation` linked to that
+canonical skill. Core installation/configuration failures stop the installer;
+missing optional provider CLIs and development/test dependencies do not.
+
+Run repository no-model validation and the developer test suite separately:
+
+```bash
+python -m delegation.preflight
+python -m unittest discover -s tests -q
+```
 
 On a fresh machine, the installer also creates deterministic
 `catalogue.json` and `profiles.json` control files from the versioned route

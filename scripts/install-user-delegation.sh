@@ -2,13 +2,12 @@
 # Install the delegation runtime as user-level, cross-project commands.
 #
 # What this does, in order:
-#   1. no-model checks: the test suite and the no-model delegation preflight
-#   2. `pipx install --force` the `ekalavya` package from this checkout,
+#   1. `pipx install --force` the `ekalavya` package from this checkout,
 #      providing the repo-independent `ekalavya` and `eka` control-plane
 #      commands (pipx builds and copies the package into its own venv).
-#   3. create initial XDG config.toml, catalogue.json, and profiles.json
+#   2. create initial XDG config.toml, catalogue.json, and profiles.json
 #      only when each is absent
-#   4. install the delegation skill to ~/.agents/skills/delegation/SKILL.md
+#   3. install the delegation skill to ~/.agents/skills/delegation/SKILL.md
 #      (a copy, not a symlink into this repo -- see docs/USER_INSTALLATION.md
 #      for why) and link it for Claude Code discovery if that pattern is
 #      present on this machine
@@ -65,13 +64,8 @@ if [ "${1:-}" = "--uninstall" ]; then
   uninstall
 fi
 
-echo "== 1/4: no-model checks =="
+echo "== 1/3: installing user-level commands (pipx) =="
 cd "$REPO_ROOT"
-python -m unittest discover -s tests -q
-python -m delegation.preflight
-
-echo
-echo "== 2/4: installing user-level commands (pipx) =="
 if ! command -v pipx >/dev/null 2>&1; then
   echo "pipx not found on PATH. Install it first (no sudo needed), e.g.:" >&2
   echo "  python3 -m pip install --user pipx && python3 -m pipx ensurepath" >&2
@@ -116,7 +110,7 @@ if [ -n "${CANONICAL_BIN}" ]; then
 fi
 
 echo
-echo "== 3/4: initial config and control files =="
+echo "== 2/3: initial config and control files =="
 if [ -f "$CONFIG_FILE" ]; then
   echo "Existing config found, left untouched: $CONFIG_FILE"
 else
@@ -140,7 +134,7 @@ for name in result['skipped']:
 "
 
 echo
-echo "== 4/4: installing skill =="
+echo "== 3/3: installing skill =="
 mkdir -p "$AGENTS_SKILL_DIR"
 cp "$REPO_ROOT/skills/delegation/SKILL.md" "$AGENTS_SKILL_FILE"
 echo "Installed skill: $AGENTS_SKILL_FILE"
