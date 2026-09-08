@@ -12,6 +12,11 @@ package with pipx, creates no credentials, and copies the canonical skill to
 `~/.agents/skills/delegation/SKILL.md`. If Claude discovery exists, it keeps
 `~/.claude/skills/delegation` linked to that canonical skill.
 
+On a fresh machine, the installer also creates deterministic
+`catalogue.json` and `profiles.json` control files from the versioned route
+metadata. Existing control files and user configuration are left untouched;
+the installer does not migrate historical `agent-delegation` state.
+
 ## Supported commands
 
 The package exposes exactly these project commands:

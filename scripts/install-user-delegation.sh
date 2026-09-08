@@ -6,7 +6,8 @@
 #   2. `pipx install --force` the `ekalavya` package from this checkout,
 #      providing the repo-independent `ekalavya` and `eka` control-plane
 #      commands (pipx builds and copies the package into its own venv).
-#   3. create an initial XDG config.toml only if one does not already exist
+#   3. create initial XDG config.toml, catalogue.json, and profiles.json
+#      only when each is absent
 #   4. install the delegation skill to ~/.agents/skills/delegation/SKILL.md
 #      (a copy, not a symlink into this repo -- see docs/USER_INSTALLATION.md
 #      for why) and link it for Claude Code discovery if that pattern is
@@ -115,7 +116,7 @@ if [ -n "${CANONICAL_BIN}" ]; then
 fi
 
 echo
-echo "== 3/4: initial config =="
+echo "== 3/4: initial config and control files =="
 if [ -f "$CONFIG_FILE" ]; then
   echo "Existing config found, left untouched: $CONFIG_FILE"
 else
@@ -124,9 +125,19 @@ else
 from delegation.config import default_config, save_config
 from pathlib import Path
 save_config(default_config(), Path(r'''$CONFIG_FILE'''))
-"
+  "
   echo "Created default config: $CONFIG_FILE"
 fi
+python3 -c "
+from ekalavya.config import ensure_control_files
+from pathlib import Path
+config_dir = Path(r'''$CONFIG_DIR''')
+result = ensure_control_files(config_dir)
+for name in result['created']:
+    print(f'Created default control file: {config_dir / name}')
+for name in result['skipped']:
+    print(f'Existing control file found, left untouched: {config_dir / name}')
+"
 
 echo
 echo "== 4/4: installing skill =="

@@ -20,6 +20,11 @@ command -v eka
 The installer is safe to rerun. It does not alter provider authentication,
 model defaults, server settings, or GPU policy.
 
+On a fresh machine it also creates deterministic `catalogue.json` and
+`profiles.json` control files from the versioned route metadata. Existing
+control files are left untouched. This is bootstrap only; it does not migrate
+the historical `agent-delegation` configuration or state.
+
 ## 3. Network-free validation
 
 From a disposable directory, run:

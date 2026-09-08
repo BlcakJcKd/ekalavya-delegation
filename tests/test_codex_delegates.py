@@ -130,6 +130,8 @@ class CodexRouteInstallAndMigrationTests(unittest.TestCase):
         installer = (root / "scripts" / "install-user-delegation.sh").read_text()
         self.assertEqual(set(metadata["project"]["scripts"]), {"eka", "ekalavya"})
         self.assertIn("Canonical commands:", installer)
+        self.assertIn("ensure_control_files", installer)
+        self.assertIn("Existing control file found, left untouched", installer)
         self.assertNotIn("agent-delegation", installer)
 
 
