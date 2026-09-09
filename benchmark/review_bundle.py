@@ -34,7 +34,11 @@ _SECRET_ASSIGNMENT = re.compile(
     r"(?i)(?:api[_-]?key|access[_-]?token|password|secret|credential)\s*[:=]\s*[\"']?([A-Za-z0-9_./+=:-]{8,})"
 )
 _PRIVATE_URL = re.compile(r"(?i)https?://[^\s/]+(?:/[^\s]*)?")
-_ABSOLUTE_HOME = re.compile(r"/home/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._+@-]+)+")
+# Ekalavya's public shell tooling targets POSIX environments.  These are the
+# home-root forms used by Linux and macOS; keep the replacement deliberately
+# limited to an absolute home prefix so the exported relative suffix remains.
+_USER_HOME_PREFIX = re.compile(r"(?<![A-Za-z0-9_])(?:/home|/Users)/[A-Za-z0-9._-]+(?=/|$)")
+_ABSOLUTE_HOME = re.compile(r"(?<![A-Za-z0-9_])(?:/home|/Users)/[A-Za-z0-9._-]+(?:/[^\s\"']*)?")
 
 
 def _sha256(path: Path) -> str:
@@ -55,6 +59,10 @@ def _sanitize(data: bytes, state_root: Path) -> tuple[bytes, bool]:
         if old in text:
             text = text.replace(old, new)
             changed = True
+    sanitized, count = _USER_HOME_PREFIX.subn("<USER_HOME>", text)
+    if count:
+        text = sanitized
+        changed = True
     return text.encode("utf-8"), changed
 
 

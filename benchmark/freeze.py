@@ -10,6 +10,11 @@ LOCK_NAME = "fixtures.lock.json"
 INCLUDED_DIRECTORIES = ("fixtures", "tasks/prompts")
 
 
+def _is_hashable_fixture(path: Path) -> bool:
+    """Exclude interpreter cache artifacts from the source fixture lock."""
+    return "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"}
+
+
 def file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -19,7 +24,7 @@ def collect_hashes(root: Path | None = None) -> dict[str, str]:
     hashes: dict[str, str] = {}
     for directory in INCLUDED_DIRECTORIES:
         base = root / directory
-        for path in sorted(p for p in base.rglob("*") if p.is_file()):
+        for path in sorted(p for p in base.rglob("*") if p.is_file() and _is_hashable_fixture(p)):
             hashes[path.relative_to(root).as_posix()] = file_hash(path)
     return hashes
 

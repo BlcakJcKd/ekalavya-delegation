@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    env:
+      HOME: ${{ runner.temp }}/ekalavya-home
+      XDG_CONFIG_HOME: ${{ runner.temp }}/ekalavya-config
+      XDG_STATE_HOME: ${{ runner.temp }}/ekalavya-state
+      XDG_CACHE_HOME: ${{ runner.temp }}/ekalavya-cache
+      PYTHONDONTWRITEBYTECODE: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install ".[test]"
+      - name: Check installed dependencies
+        run: python -m pip check
+      - name: Run canonical unittest suite
+        run: python -m unittest discover -s tests -q
+      - name: Run offline benchmark gates
+        run: |
+          python -m benchmark.v2.runner check
+          python -m benchmark.runner check
+
+  package-smoke:
+    name: Package and clean bootstrap (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build a wheel
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip wheel --no-deps --wheel-dir dist .
+      - name: Install the wheel into a clean virtual environment
+        run: |
+          python -m venv "$RUNNER_TEMP/ekalavya-clean-venv"
+          "$RUNNER_TEMP/ekalavya-clean-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/ekalavya-clean-venv/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/ekalavya-clean-venv/bin/python" -m pip check
+          "$RUNNER_TEMP/ekalavya-clean-venv/bin/python" - <<'PY'
+          import importlib.metadata
+          assert importlib.metadata.version("ekalavya-delegation") == "0.4.0.dev0"
+          PY
+
+  installer-and-cli:
+    name: Installer and offline CLI smoke (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install ".[test]"
+      - name: Check installer syntax and behavior
+        run: |
+          bash -n scripts/install-user-delegation.sh
+          python -m unittest -q tests.test_installer
+      - name: Run read-only CLI smoke checks
+        env:
+          HOME: ${{ runner.temp }}/ekalavya-home
+          XDG_CONFIG_HOME: ${{ runner.temp }}/ekalavya-config
+          XDG_STATE_HOME: ${{ runner.temp }}/ekalavya-state
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          eka --version
+          eka --help
+          ekalavya --help
+          eka setup --json
+          eka config --json
+          eka models --json
+          eka profiles --json
+          eka doctor --json
+          eka bench status --json
+
+  public-repository:
+    name: Public repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run tracked-material checks
+        run: scripts/check-public-repo.sh

@@ -4,7 +4,7 @@ The operational package is deliberately separate from the historical
 ``benchmark`` subsystem and the legacy ``delegation`` compatibility layer.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0.dev0"
 SCHEMA_VERSION = 2
 
 __all__ = ["__version__", "SCHEMA_VERSION"]

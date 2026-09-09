@@ -182,7 +182,7 @@ class ReviewBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             state = Path(temp) / "experiment"
             (state / "evidence").mkdir(parents=True)
-            (state / "REPORT.md").write_text("state=/home/bivin/.local/state/ekalavya\n")
+            (state / "REPORT.md").write_text("state=/home/another-user/.local/state/ekalavya\n")
             (state / "run-summary.json").write_text(json.dumps({"attempts": 1}))
             (state / "evidence/a.json").write_text(json.dumps({"exit_code": 0, "timed_out": False}))
             (state / "ledger.sqlite3").write_text("must not copy")
@@ -211,7 +211,7 @@ class ReviewBundleTests(unittest.TestCase):
             state = Path(temp) / "experiment"
             (state / "evidence").mkdir(parents=True)
             source = state / "evidence" / "attempt.json"
-            source.write_text(json.dumps({"exit_code": 0, "timed_out": False, "path": "/home/bivin/private"}))
+            source.write_text(json.dumps({"exit_code": 0, "timed_out": False, "path": "/home/another-user/private"}))
             before = source.read_bytes()
             (state / "REPORT.md").write_text("review\n")
             (state / "provenance").mkdir()

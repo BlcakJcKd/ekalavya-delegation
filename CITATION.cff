@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use Ekalavya, please cite the project and the specific commit or release you used."
+type: software
+title: "Ekalavya"
+authors:
+  - family-names: Pradeep
+    given-names: Bivin
+repository-code: "https://github.com/BlcakJcKd/ekalavya-delegation"
+license: MIT
+abstract: "A local control plane for deliberate, auditable AI delegation and offline benchmark validation."
+keywords:
+  - AI delegation
+  - reproducible evaluation
+  - open source

@@ -1,5 +1,9 @@
 # Ekalavya
 
+[![CI](https://github.com/BlcakJcKd/ekalavya-delegation/actions/workflows/ci.yml/badge.svg)](https://github.com/BlcakJcKd/ekalavya-delegation/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Version: 0.4.0.dev0](https://img.shields.io/badge/version-0.4.0.dev0-orange.svg)](CHANGELOG.md)
+
 Ekalavya is a local control plane for deliberate AI delegation. It lets a
 primary coding agent select a stable profile, resolve an exact available
 model identity, and keep an auditable private record of what happened. It

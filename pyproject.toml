@@ -1,12 +1,19 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ekalavya-delegation"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Ekalavya delegation control plane and benchmark subsystem"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Bivin Pradeep"}]
+
+[project.optional-dependencies]
+test = ["numpy", "matplotlib"]
+benchmark = ["numpy", "matplotlib"]
 
 [project.scripts]
 eka = "ekalavya.cli:main"
@@ -14,3 +21,6 @@ ekalavya = "ekalavya.cli:main"
 
 [tool.setuptools]
 packages = ["delegation", "ekalavya", "benchmark", "benchmark.v2", "benchmark.public_characterization"]
+
+[tool.setuptools.dynamic]
+version = {attr = "ekalavya.__version__"}
