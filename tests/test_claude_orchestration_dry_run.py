@@ -14,6 +14,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from delegation.core import DELEGATION_DEPTH_ENV, run_consultation
 
@@ -26,6 +27,11 @@ TASK = "Read-only reconnaissance: identify the likely cause of the failing test.
 
 
 class ClaudeOrchestrationDryRunTests(unittest.TestCase):
+    def setUp(self):
+        self._which = patch("delegation.core.shutil.which", side_effect=lambda name: f"/fake/{name}")
+        self._which.start()
+        self.addCleanup(self._which.stop)
+
     def test_full_dry_run_flow_matches_every_required_property(self):
         with TemporaryDirectory() as temp:
             root = Path(temp)

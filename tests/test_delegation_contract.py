@@ -7,6 +7,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from delegation.core import run_consultation
 
@@ -15,6 +16,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class AuditResponseStatusTests(unittest.TestCase):
+    def setUp(self):
+        self._which = patch("delegation.core.shutil.which", side_effect=lambda name: f"/fake/{name}")
+        self._which.start()
+        self.addCleanup(self._which.stop)
+
     def _scope(self, root: Path) -> Path:
         workspace = root / "scope"
         workspace.mkdir()

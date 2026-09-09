@@ -100,6 +100,11 @@ class CaseAInvalidScopeTests(unittest.TestCase):
 class CaseBTimeoutTests(unittest.TestCase):
     """B. a delegate that outlives its timeout must be killed, not retried."""
 
+    def setUp(self):
+        self._which = patch.object(core.shutil, "which", side_effect=lambda name: f"/fake/{name}")
+        self._which.start()
+        self.addCleanup(self._which.stop)
+
     def _scope(self, root: Path) -> Path:
         workspace = root / "scope"
         workspace.mkdir()

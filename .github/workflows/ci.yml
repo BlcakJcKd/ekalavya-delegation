@@ -28,6 +28,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      - name: Prepare isolated state paths
+        run: mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
       - name: Install test dependencies
         run: python -m pip install --upgrade pip && python -m pip install ".[test]"
       - name: Check installed dependencies
@@ -84,6 +86,7 @@ jobs:
           XDG_STATE_HOME: ${{ runner.temp }}/ekalavya-state
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
+          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
           eka --version
           eka --help
           ekalavya --help

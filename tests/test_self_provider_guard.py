@@ -21,6 +21,11 @@ TASK = "self-provider guard probe; do not modify anything"
 
 
 class SelfProviderGuardTests(unittest.TestCase):
+    def setUp(self):
+        self._which = patch("delegation.core.shutil.which", side_effect=lambda name: f"/fake/{name}")
+        self._which.start()
+        self.addCleanup(self._which.stop)
+
     def _scope(self, root: Path) -> Path:
         workspace = root / "scope"
         workspace.mkdir()
