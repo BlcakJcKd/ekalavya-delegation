@@ -54,7 +54,36 @@ jobs:
       - name: Build a wheel
         run: |
           python -m pip install --upgrade pip
-          python -m pip wheel --no-deps --wheel-dir dist .
+          python -m pip install build
+          python -m build --sdist --wheel --outdir dist .
+      - name: Inspect package metadata and source contents
+        run: |
+          python - <<'PY'
+          import email
+          import pathlib
+          import tarfile
+          import zipfile
+
+          dist = pathlib.Path("dist")
+          wheel = next(dist.glob("*.whl"))
+          sdist = next(dist.glob("*.tar.gz"))
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              metadata_name = next(name for name in names if name.endswith("/METADATA"))
+              metadata = email.message_from_bytes(archive.read(metadata_name))
+              assert metadata["License-Expression"] == "MIT"
+              assert metadata["License-File"] == "LICENSE"
+              assert not any(name.endswith("deepseek-v4.json") for name in names)
+          with tarfile.open(sdist) as archive:
+              names = archive.getnames()
+              for required in (
+                  "provider_templates/codex/model-catalogs/deepseek-v4.json",
+                  "provider_templates/codex/model-catalogs/deepseek-v4.NOTICE.md",
+                  "LICENSES/Apache-2.0.txt",
+                  "THIRD_PARTY_NOTICES.md",
+              ):
+                  assert any(name.endswith(required) for name in names), required
+          PY
       - name: Install the wheel into a clean virtual environment
         run: |
           python -m venv "$RUNNER_TEMP/ekalavya-clean-venv"

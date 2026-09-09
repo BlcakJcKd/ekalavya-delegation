@@ -4,6 +4,10 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Version: 0.4.0.dev0](https://img.shields.io/badge/version-0.4.0.dev0-orange.svg)](CHANGELOG.md)
 
+Ekalavya's original source is licensed under the [MIT License](LICENSE).
+Third-party or derived material is distributed under the licences identified
+in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 Ekalavya is a local control plane for deliberate AI delegation. It lets a
 primary coding agent select a stable profile, resolve an exact available
 model identity, and keep an auditable private record of what happened. It

@@ -30,6 +30,37 @@ for path in "${TRACKED[@]}"; do
   esac
 done
 
+# Known provider catalogue files can contain substantial derived instruction
+# material. Require an adjacent per-file notice and the repository-level
+# attribution before allowing one to enter the public tree. This is a narrow
+# provenance guard, not a general licence scanner.
+tracked_contains() {
+  local candidate="$1"
+  local path
+  for path in "${TRACKED[@]}"; do
+    if [ "$path" = "$candidate" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+for path in "${TRACKED[@]}"; do
+  case "$path" in
+    provider_templates/codex/model-catalogs/*.json)
+      if grep -Fq '"instructions_template"' "$path"; then
+        notice="${path%.json}.NOTICE.md"
+        if ! tracked_contains "$notice" && [ ! -f "$notice" ]; then
+          failures+=("catalogue missing adjacent provenance notice: $path")
+        fi
+        if ! grep -Fq "$path" THIRD_PARTY_NOTICES.md 2>/dev/null; then
+          failures+=("catalogue missing THIRD_PARTY_NOTICES.md entry: $path")
+        fi
+      fi
+      ;;
+  esac
+done
+
 # These are high-confidence credential forms. Deliberately do not match
 # ordinary words such as token, credential, password, or environment variable
 # names in documentation.

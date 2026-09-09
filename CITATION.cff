@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use Ekalavya, please cite the project and the specific commit or release you used."
+message: "If you use Ekalavya, please cite the project and the specific commit or release you used. The MIT license applies to original Ekalavya source; see THIRD_PARTY_NOTICES.md for third-party or derived material."
 type: software
 title: "Ekalavya"
 authors:

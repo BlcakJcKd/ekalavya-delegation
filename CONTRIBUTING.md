@@ -5,6 +5,10 @@ should preserve explicit user choice, provider routing boundaries, private
 user-owned configuration and state, and the rule that inspection and tests do
 not invoke models.
 
+Ekalavya's original source is licensed under MIT. Check
+`THIRD_PARTY_NOTICES.md` before adding or adapting third-party or derived
+material, and keep the applicable notices with any distributed copy.
+
 Before opening a pull request:
 
 1. Create a focused branch from `main`.
