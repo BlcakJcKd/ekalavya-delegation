@@ -87,7 +87,7 @@ jobs:
           XDG_STATE_HOME: ${{ runner.temp }}/ekalavya-state
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
-          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
+          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME/ekalavya"
           eka --version
           eka --help
           ekalavya --help
