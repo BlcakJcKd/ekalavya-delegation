@@ -96,8 +96,10 @@ Install Ekalavya from https://github.com/BlcakJcKd/ekalavya-delegation.
 Read README.md and docs/AGENT_INSTALLATION.md first. Use the supported
 user-level installer; do not use sudo or modify system Python. Preserve any
 existing Ekalavya configuration and state. Do not configure providers I did
-not select or ask me to paste API keys. Use existing provider authentication,
-run or guide me through `eka setup`, then run `eka doctor` and report which
+not select or ask me to paste API keys. Interactive humans may use `eka setup`;
+non-TTY agents/scripts must not drive the interactive UI. Inspect with the
+read-only `eka setup --json`, apply requested deterministic changes with the
+existing `eka config` commands, then finish with `eka doctor` and report which
 selected integrations are ready. Do not invoke models merely to verify setup.
 ```
 
