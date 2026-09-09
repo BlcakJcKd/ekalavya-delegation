@@ -13,10 +13,10 @@ jobs:
     name: Unit tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     env:
-      HOME: ${{ runner.temp }}/ekalavya-home
-      XDG_CONFIG_HOME: ${{ runner.temp }}/ekalavya-config
-      XDG_STATE_HOME: ${{ runner.temp }}/ekalavya-state
-      XDG_CACHE_HOME: ${{ runner.temp }}/ekalavya-cache
+      HOME: /tmp/ekalavya-home
+      XDG_CONFIG_HOME: /tmp/ekalavya-config
+      XDG_STATE_HOME: /tmp/ekalavya-state
+      XDG_CACHE_HOME: /tmp/ekalavya-cache
       PYTHONDONTWRITEBYTECODE: "1"
     strategy:
       fail-fast: false
