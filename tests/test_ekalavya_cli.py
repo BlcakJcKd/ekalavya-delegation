@@ -144,6 +144,19 @@ class EkalavyaCliTests(unittest.TestCase):
             conn = sqlite3.connect(root / "state" / "ekalavya" / "ledger.sqlite3")
             self.assertEqual(conn.execute("SELECT status FROM runs").fetchone()[0], "completed")
 
+    def test_run_persists_safe_provider_usage_with_canonical_cache_read_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); self._files(root)
+            prompt = root / "prompt.md"; prompt.write_text("review")
+            evidence = root / "evidence"; evidence.mkdir(); (evidence / "execution.json").write_text("{}")
+            execution = {"state": "completed", "evidence": str(evidence), "provider_reported_usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 40, "total_tokens": 120}, "provider_reported_model_id": "served-model", "wall_seconds": 1.0}
+            with self._xdg(root), patch("ekalavya.cli.execute", return_value=execution):
+                self.assertEqual(main(["run", "haiku", "--workspace", str(root), "--prompt-file", str(prompt), "--task", "review"]), 0)
+            conn = sqlite3.connect(root / "state" / "ekalavya" / "ledger.sqlite3")
+            row = conn.execute("SELECT cache_read_tokens,cache_read_tokens_provenance,metadata_json FROM request_metrics").fetchone()
+            self.assertEqual(row, (40, "provider_reported", "{}"))
+            self.assertIsNone(conn.execute("SELECT cache_write_tokens FROM request_metrics").fetchone()[0])
+
 
 if __name__ == "__main__":
     unittest.main()

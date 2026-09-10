@@ -462,11 +462,13 @@ def cmd_usage(args: argparse.Namespace) -> int:
     conn = connect()
     if args.action in {"delete", "reset", "prune"}:
         before = args.before if args.action == "prune" else None
-        result = clear_observability(conn, before=before)
+        try:
+            result = clear_observability(conn, before=before)
+        except ValueError as exc:
+            print(f"usage {args.action}: {exc}", file=sys.stderr)
+            return 2
         result["preserved"] = ["runs", "resolution_decisions", "promotion_events", "default_changes", "benchmark evidence", "retained responses", "catalogue/model provenance", "cost_observations"]
         _json_or_text(result, args.json); return 0
-    if args.action == "feedback":
-        return 2
     if args.action == "export":
         output = export_usage(conn, fmt=args.format, period=args.period, by=args.by, filters=_usage_filters(args))
         if args.output:

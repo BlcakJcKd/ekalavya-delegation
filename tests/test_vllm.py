@@ -156,6 +156,12 @@ class VLLMTransportTests(VLLMTestBase):
         self.assertEqual((record_dir / "stdout.txt").read_text(), "answer")
         self.assertEqual((record_dir / "stdout.txt").stat().st_mode & 0o777, 0o600)
 
+    def test_provider_reported_model_identifier_has_bounded_telemetry_identity(self):
+        transport = RecordingTransport(body=json.dumps({"model": "x" * 257, "choices": [{"message": {"content": "answer"}}]}))
+        outcome = self.run_call(transport)
+        evidence = json.loads((outcome.record_dir / "execution.json").read_text())
+        self.assertIsNone(evidence["provider_reported_model_id"])
+
     def test_thinking_override_is_explicit(self):
         transport = RecordingTransport()
         self.assertEqual(self.run_call(transport, thinking=True)[0], 0)

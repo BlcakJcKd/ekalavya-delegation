@@ -3,11 +3,14 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from ekalavya.ledger import clear_observability, connect, delete_feedback, record_run, record_run_observability, record_safe_request_metric, record_resolution, set_feedback
+from ekalavya.ledger import clear_observability, connect, delete_feedback, normalize_cutoff, record_quota_snapshot, record_run, record_run_observability, record_safe_request_metric, record_resolution, set_feedback
+import ekalavya.ledger as ledger_module
 from ekalavya.schema import RunIntent, normalize_task
-from ekalavya.usage import build_insights, build_usage, period_bounds
+from ekalavya.usage import build_insights, build_usage, export_usage, period_bounds
 from ekalavya.quota import hosted_quota_statuses
+from ekalavya.telemetry import assert_safe_analytics_payload, persist_execution_observability
 
 
 class UsageObservabilityTests(unittest.TestCase):
@@ -44,6 +47,22 @@ class UsageObservabilityTests(unittest.TestCase):
         record_safe_request_metric(self.conn, "r", {"total_tokens": 4, "total_tokens_provenance": "provider_reported"})
         self.assertEqual(self.conn.execute("SELECT metadata_json,observability_owned FROM request_metrics").fetchone()[0:2], ("{}", 1))
 
+    def test_real_post_execution_projection_uses_canonical_cache_read_field(self):
+        record_run(self.conn, "real", {"profile": "p"}, provider="vllm", identity_key="requested")
+        persist_execution_observability(self.conn, "real", run_data={"task": "coding", "requested_profile": "p", "primary_provider": "vllm", "requested_provider_model_id": "requested"}, execution={"state": "completed", "provider_reported_usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_tokens": 40, "total_tokens": 120}, "provider_reported_model_id": "served", "wall_seconds": 1.0})
+        row = self.conn.execute("SELECT cache_read_tokens,cache_read_tokens_provenance,metadata_json FROM request_metrics").fetchone()
+        self.assertEqual(tuple(row), (40, "provider_reported", "{}"))
+        self.assertEqual(self.conn.execute("SELECT cache_read_tokens FROM run_observability").fetchone()[0], 40)
+        persist_execution_observability(self.conn, "real", run_data={"task": "coding", "requested_profile": "p", "primary_provider": "vllm"}, execution={"state": "completed", "provider_reported_usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}})
+        self.assertIsNone(self.conn.execute("SELECT cache_read_tokens FROM request_metrics ORDER BY id DESC LIMIT 1").fetchone()[0])
+        self.assertNotIn("provider_reported_usage", export_usage(self.conn, fmt="json", period="all"))
+        self.assertNotIn("provider_reported_usage", export_usage(self.conn, fmt="csv", period="all"))
+
+    def test_exported_safety_gate_rejects_nested_and_identity_secrets(self):
+        assert_safe_analytics_payload({"input_tokens": 1, "cache_read_tokens": 0})
+        for payload in ({"chain_of_thought": "private"}, {"api_key": "secret"}, {"safe": {"prompt": "private"}}, {"raw_payload": []}):
+            with self.assertRaises(ValueError): assert_safe_analytics_payload(payload)
+
     def test_ambiguous_and_benchmark_rows_are_not_usage_events(self):
         self.add_event("ordinary")
         record_run(self.conn, "bench", {"profile": "p"}, evaluation_class="public_characterization")
@@ -53,6 +72,9 @@ class UsageObservabilityTests(unittest.TestCase):
     def test_migration_backfills_only_canonical_delegate_evidence(self):
         record_run(self.conn, "observed", {"profile": "p", "task": "review"}, provider="claude", identity_key="catalogue-key", status="completed", raw_evidence_path="/private/delegate_runs/x")
         record_run(self.conn, "imported", {"profile": "p"}, provider="claude", identity_key="catalogue-key", status="imported", raw_evidence_path="/private/delegate_runs/y")
+        self.conn.execute("DELETE FROM schema_versions")
+        self.conn.execute("INSERT INTO schema_versions VALUES(2,'2026-01-01T00:00:00+00:00','old')")
+        self.conn.commit()
         self.conn.close()
         self.conn = connect(Path(self.temp.name) / "ledger.sqlite3")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM run_observability").fetchone()[0], 1)
@@ -76,6 +98,42 @@ class UsageObservabilityTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM resolution_decisions").fetchone()[0], 1)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM cost_observations").fetchone()[0], 1)
 
+    def test_prune_normalizes_offset_and_rejects_invalid_cutoffs_before_delete(self):
+        record_run(self.conn, "old", {"profile": "p"}, provider="claude", identity_key="old", started_at="2026-01-01T00:00:00+00:00")
+        record_resolution(self.conn, "old", {}, {"state": "resolved"})
+        record_run_observability(self.conn, "old", {"task": "review", "execution_status": "success", "created_at": "2026-01-01T00:00:00+00:00"})
+        record_quota_snapshot(self.conn, {"provider": "claude", "scope_kind": "account", "resource_kind": "quota", "capability": "unavailable", "observed_at": "2026-01-01T00:00:00+00:00"})
+        set_feedback(self.conn, "old", "useful")
+        self.assertEqual(normalize_cutoff("2026-01-02T05:30:00+05:30"), "2026-01-02T00:00:00+00:00")
+        for cutoff in ("not-a-date", "2026-01-02T00:00:00"):
+            with self.assertRaises(ValueError): clear_observability(self.conn, before=cutoff)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM run_observability").fetchone()[0], 1)
+        result = clear_observability(self.conn, before="2026-01-02T05:30:00+05:30")
+        self.assertEqual(result["run_observability"], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM resolution_decisions").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM user_feedback").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM quota_snapshots").fetchone()[0], 0)
+
+    def test_v2_to_v3_migration_failure_rolls_back_and_successful_reopen_does_not_rescan(self):
+        path = Path(self.temp.name) / "migration.sqlite3"
+        conn = connect(path)
+        record_run(conn, "legacy", {"profile": "p"}, provider="claude", identity_key="identity", status="completed", raw_evidence_path="/x/delegate_runs/run")
+        conn.execute("DELETE FROM schema_versions")
+        conn.execute("INSERT INTO schema_versions VALUES(2,'2026-01-01T00:00:00+00:00','old')")
+        conn.commit(); conn.close()
+        with patch.object(ledger_module, "_backfill_unambiguous_observability", side_effect=RuntimeError("injected")):
+            with self.assertRaises(RuntimeError): connect(path)
+        raw = __import__("sqlite3").connect(path)
+        self.assertEqual(raw.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0], 2)
+        self.assertEqual(raw.execute("SELECT COUNT(*) FROM run_observability").fetchone()[0], 0)
+        raw.close()
+        migrated = connect(path)
+        self.assertEqual(migrated.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0], 3)
+        with patch.object(ledger_module, "_backfill_unambiguous_observability", side_effect=AssertionError("must not rescan")):
+            reopened = connect(path)
+        self.assertEqual(reopened.execute("SELECT COUNT(*) FROM run_observability").fetchone()[0], 1)
+
     def test_period_uses_utc_and_rejects_ambiguous_forms(self):
         start, end, label = period_bounds("7d")
         self.assertEqual(start.tzinfo, end.tzinfo)
@@ -97,6 +155,16 @@ class UsageObservabilityTests(unittest.TestCase):
         delete_feedback(self.conn, "r1")
         self.assertIsNone(self.conn.execute("SELECT outcome FROM user_feedback WHERE run_id='r1'").fetchone())
         with self.assertRaises(ValueError): set_feedback(self.conn, "missing", "useful")
+
+    def test_feedback_rate_requires_three_ratings(self):
+        self.add_event("f0")
+        self.assertIsNone(build_usage(self.conn, period="all")["summary"]["feedback"]["useful_rate"])
+        set_feedback(self.conn, "f0", "useful")
+        self.assertIsNone(build_usage(self.conn, period="all")["summary"]["feedback"]["useful_rate"])
+        self.add_event("f1"); set_feedback(self.conn, "f1", "mixed")
+        self.assertIsNone(build_usage(self.conn, period="all")["summary"]["feedback"]["useful_rate"])
+        self.add_event("f2"); set_feedback(self.conn, "f2", "useful")
+        self.assertEqual(build_usage(self.conn, period="all")["summary"]["feedback"]["useful_rate"], 2 / 3)
 
     def test_hosted_quota_states_are_honest_and_scoped(self):
         snapshots = hosted_quota_statuses()

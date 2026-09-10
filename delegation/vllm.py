@@ -48,6 +48,7 @@ DEFAULT_MAX_TOKENS_CAP = 512
 HARD_MAX_TOKENS = 8192
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_OBSERVABILITY_BYTES = 4 * 1024 * 1024
+MAX_PROVIDER_REPORTED_MODEL_ID = 256
 KEYRING_LOOKUP_TIMEOUT_SECONDS = 10
 OBSERVABILITY_TIMEOUT_SECONDS = 5
 LIVE_STATUS_INTERVAL_SECONDS = 2.0
@@ -839,7 +840,7 @@ def run_vllm_consultation(
                     }
                 else:
                     provider_reported_usage = {}
-                provider_reported_model_id = parsed.get("model") if isinstance(parsed, dict) and isinstance(parsed.get("model"), str) else None
+                provider_reported_model_id = parsed.get("model") if isinstance(parsed, dict) and isinstance(parsed.get("model"), str) and len(parsed["model"]) <= MAX_PROVIDER_REPORTED_MODEL_ID else None
                 provider_success = True
                 inference_occurred = True
                 try:

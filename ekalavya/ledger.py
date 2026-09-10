@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS benchmark_tasks(id INTEGER PRIMARY KEY, suite_id INTE
 CREATE TABLE IF NOT EXISTS runs(run_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT, profile TEXT, requested_json TEXT NOT NULL, resolved_json TEXT, resolution_reason TEXT, provider TEXT, identity_key TEXT, harness_id INTEGER, engine_id INTEGER, hardware_id INTEGER, billing_mode TEXT, evaluation_class TEXT NOT NULL DEFAULT 'unknown', raw_evidence_path TEXT, raw_evidence_sha256 TEXT, status TEXT);
 CREATE TABLE IF NOT EXISTS task_attempts(id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), task_id INTEGER REFERENCES benchmark_tasks(id), score REAL, public_score REAL, hidden_score REAL, invariant_score REAL, api_score REAL, scope_compliant INTEGER, wall_seconds REAL, baseline_score REAL, baseline_check_vector_json TEXT, final_check_vector_json TEXT, delta_score REAL, normalized_improvement REAL, evaluator_tampering INTEGER, prohibited_changed_files_json TEXT, metadata_json TEXT);
 CREATE TABLE IF NOT EXISTS request_metrics(id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), ordinal INTEGER, started_at TEXT, ended_at TEXT, model TEXT, provider TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER, reasoning_tokens INTEGER, ttft_seconds REAL, wall_seconds REAL, stop_reason TEXT, metadata_json TEXT);
-CREATE TABLE IF NOT EXISTS run_observability(run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE, schema_version INTEGER NOT NULL, event_kind TEXT NOT NULL DEFAULT 'delegation', task TEXT NOT NULL DEFAULT 'unspecified', primary_provider TEXT, requested_profile TEXT, requested_provider_model_id TEXT, resolved_catalogue_identity_key TEXT, resolved_family TEXT, resolved_generation TEXT, provider_reported_model_id TEXT, effective_identity_status TEXT NOT NULL DEFAULT 'unavailable', reasoning_level TEXT, harness_name TEXT, harness_version TEXT, transport TEXT, invocation_basis TEXT, execution_status TEXT NOT NULL, failure_category TEXT, wall_seconds REAL, delegation_count INTEGER, provider_request_count INTEGER, retry_count INTEGER, telemetry_status TEXT NOT NULL DEFAULT 'unavailable', token_telemetry_status TEXT NOT NULL DEFAULT 'unavailable', input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER, cached_input_tokens INTEGER, uncached_input_tokens INTEGER, total_tokens INTEGER, input_tokens_provenance TEXT, output_tokens_provenance TEXT, reasoning_tokens_provenance TEXT, cached_input_tokens_provenance TEXT, uncached_input_tokens_provenance TEXT, total_tokens_provenance TEXT, cost REAL, currency TEXT, cost_source TEXT NOT NULL DEFAULT 'unavailable', price_snapshot_id INTEGER REFERENCES pricing_snapshots(id), created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS run_observability(run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE, schema_version INTEGER NOT NULL, event_kind TEXT NOT NULL DEFAULT 'delegation', task TEXT NOT NULL DEFAULT 'unspecified', primary_provider TEXT, requested_profile TEXT, requested_provider_model_id TEXT, resolved_catalogue_identity_key TEXT, resolved_family TEXT, resolved_generation TEXT, provider_reported_model_id TEXT, effective_identity_status TEXT NOT NULL DEFAULT 'unavailable', reasoning_level TEXT, harness_name TEXT, harness_version TEXT, transport TEXT, invocation_basis TEXT, execution_status TEXT NOT NULL, failure_category TEXT, wall_seconds REAL, delegation_count INTEGER, provider_request_count INTEGER, retry_count INTEGER, telemetry_status TEXT NOT NULL DEFAULT 'unavailable', token_telemetry_status TEXT NOT NULL DEFAULT 'unavailable', input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER, cache_read_tokens INTEGER, uncached_input_tokens INTEGER, total_tokens INTEGER, input_tokens_provenance TEXT, output_tokens_provenance TEXT, reasoning_tokens_provenance TEXT, cache_read_tokens_provenance TEXT, uncached_input_tokens_provenance TEXT, total_tokens_provenance TEXT, cost REAL, currency TEXT, cost_source TEXT NOT NULL DEFAULT 'unavailable', price_snapshot_id INTEGER REFERENCES pricing_snapshots(id), created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS quota_snapshots(id INTEGER PRIMARY KEY, provider TEXT NOT NULL, scope_kind TEXT NOT NULL, scope_key TEXT, resource_kind TEXT NOT NULL, window_kind TEXT, window_label TEXT, used_value REAL, remaining_value REAL, limit_value REAL, percentage REAL, units TEXT, reset_at TEXT, observed_at TEXT NOT NULL, source TEXT NOT NULL, capability TEXT NOT NULL, accuracy TEXT NOT NULL DEFAULT 'unknown', error_category TEXT, details_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS user_feedback(run_id TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE, outcome TEXT NOT NULL, recorded_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tool_events(id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), request_id INTEGER REFERENCES request_metrics(id), ordinal INTEGER, tool_name TEXT, validity TEXT, error TEXT, recovered INTEGER, alternate_tool INTEGER, metadata_json TEXT);
@@ -68,7 +68,26 @@ def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
-def _migrate_schema(conn: sqlite3.Connection) -> None:
+def _rename_column_if_needed(conn: sqlite3.Connection, table: str, old: str, new: str) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if old in columns and new not in columns:
+        conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+
+
+def normalize_cutoff(value: str) -> str:
+    """Return a canonical UTC cutoff or fail before any DELETE is issued."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("prune cutoff must be an offset-aware ISO-8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("prune cutoff must be an offset-aware ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("prune cutoff must include an explicit timezone offset")
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _migrate_schema(conn: sqlite3.Connection, *, backfill: bool) -> None:
     """Additive migrations for ledgers created before evaluation classes."""
     _ensure_column(conn, "harnesses", "capabilities_json", "TEXT")
     _ensure_column(conn, "harnesses", "telemetry_json", "TEXT")
@@ -77,13 +96,16 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "harnesses", "observed_at", "TEXT")
     _ensure_column(conn, "benchmark_suites", "evaluation_class", "TEXT NOT NULL DEFAULT 'unknown'")
     _ensure_column(conn, "runs", "evaluation_class", "TEXT NOT NULL DEFAULT 'unknown'")
+    _rename_column_if_needed(conn, "request_metrics", "cached_input_tokens_provenance", "cache_read_tokens_provenance")
+    _rename_column_if_needed(conn, "run_observability", "cached_input_tokens", "cache_read_tokens")
+    _rename_column_if_needed(conn, "run_observability", "cached_input_tokens_provenance", "cache_read_tokens_provenance")
     for column, definition in (
         ("total_tokens", "INTEGER"),
         ("observability_owned", "INTEGER NOT NULL DEFAULT 0"),
         ("input_tokens_provenance", "TEXT"),
         ("output_tokens_provenance", "TEXT"),
         ("reasoning_tokens_provenance", "TEXT"),
-        ("cached_input_tokens_provenance", "TEXT"),
+        ("cache_read_tokens_provenance", "TEXT"),
         ("cache_write_tokens_provenance", "TEXT"),
         ("total_tokens_provenance", "TEXT"),
     ):
@@ -111,7 +133,8 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE benchmark_suites SET evaluation_class='unknown' WHERE evaluation_class IS NULL OR evaluation_class='' ")
     conn.execute("UPDATE runs SET evaluation_class='unknown' WHERE evaluation_class IS NULL OR evaluation_class='' ")
     conn.execute("UPDATE request_metrics SET observability_owned=0 WHERE observability_owned IS NULL")
-    _backfill_unambiguous_observability(conn)
+    if backfill:
+        _backfill_unambiguous_observability(conn)
 
 
 def _backfill_unambiguous_observability(conn: sqlite3.Connection) -> None:
@@ -139,11 +162,21 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(SCHEMA_SQL)
-    _migrate_schema(conn)
-    checksum = hashlib.sha256(SCHEMA_SQL.encode()).hexdigest()
-    conn.execute("INSERT OR IGNORE INTO schema_versions VALUES(?,?,?)", (SCHEMA_VERSION, datetime.now(timezone.utc).isoformat(), checksum))
-    conn.commit()
+    version_row = conn.execute("SELECT MAX(version) FROM schema_versions").fetchone() if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_versions'").fetchone() else None
+    migration_required = version_row is None or version_row[0] is None or int(version_row[0]) < SCHEMA_VERSION
+    try:
+        # Keep schema creation, additive alterations, conservative backfill,
+        # and the v3 marker in one transaction.  A failed migration rolls all
+        # of it back instead of leaving a partially upgraded ledger.
+        conn.executescript("BEGIN;\n" + SCHEMA_SQL)
+        _migrate_schema(conn, backfill=migration_required)
+        checksum = hashlib.sha256(SCHEMA_SQL.encode()).hexdigest()
+        conn.execute("INSERT OR IGNORE INTO schema_versions VALUES(?,?,?)", (SCHEMA_VERSION, datetime.now(timezone.utc).isoformat(), checksum))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
     if target.exists():
         os.chmod(target, 0o600)
     return conn
@@ -315,21 +348,21 @@ def record_safe_request_metric(conn: sqlite3.Connection, run_id: str, metric: di
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
         "reasoning_tokens", "ttft_seconds", "wall_seconds", "stop_reason",
         "total_tokens", "input_tokens_provenance", "output_tokens_provenance",
-        "reasoning_tokens_provenance", "cached_input_tokens_provenance",
+        "reasoning_tokens_provenance", "cache_read_tokens_provenance",
         "cache_write_tokens_provenance", "total_tokens_provenance",
     }
     unknown = set(metric) - allowed
     if unknown:
         raise ValueError(f"unsafe analytics metric fields: {sorted(unknown)!r}")
-    for key in ("input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cached_input_tokens_provenance", "cache_write_tokens_provenance", "total_tokens_provenance"):
+    for key in ("input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cache_read_tokens_provenance", "cache_write_tokens_provenance", "total_tokens_provenance"):
         value = metric.get(key)
         if value is not None and value not in PROVENANCE_VALUES:
             raise ValueError(f"invalid telemetry provenance for {key}: {value!r}")
     values = [metric.get(key) for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens")]
     if any(value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0) for value in values):
         raise ValueError("token telemetry must be non-negative integers or null")
-    conn.execute("""INSERT INTO request_metrics(run_id,ordinal,started_at,ended_at,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,ttft_seconds,wall_seconds,stop_reason,metadata_json,total_tokens,observability_owned,input_tokens_provenance,output_tokens_provenance,reasoning_tokens_provenance,cached_input_tokens_provenance,cache_write_tokens_provenance,total_tokens_provenance)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)""", (run_id, metric.get("ordinal"), metric.get("request_start"), metric.get("request_end"), metric.get("model"), metric.get("provider"), metric.get("input_tokens"), metric.get("output_tokens"), metric.get("cache_read_tokens"), metric.get("cache_write_tokens"), metric.get("reasoning_tokens"), metric.get("ttft_seconds"), metric.get("wall_seconds"), metric.get("stop_reason"), "{}", metric.get("total_tokens"), metric.get("input_tokens_provenance"), metric.get("output_tokens_provenance"), metric.get("reasoning_tokens_provenance"), metric.get("cached_input_tokens_provenance"), metric.get("cache_write_tokens_provenance"), metric.get("total_tokens_provenance")))
+    conn.execute("""INSERT INTO request_metrics(run_id,ordinal,started_at,ended_at,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,ttft_seconds,wall_seconds,stop_reason,metadata_json,total_tokens,observability_owned,input_tokens_provenance,output_tokens_provenance,reasoning_tokens_provenance,cache_read_tokens_provenance,cache_write_tokens_provenance,total_tokens_provenance)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?,?)""", (run_id, metric.get("ordinal"), metric.get("request_start"), metric.get("request_end"), metric.get("model"), metric.get("provider"), metric.get("input_tokens"), metric.get("output_tokens"), metric.get("cache_read_tokens"), metric.get("cache_write_tokens"), metric.get("reasoning_tokens"), metric.get("ttft_seconds"), metric.get("wall_seconds"), metric.get("stop_reason"), "{}", metric.get("total_tokens"), metric.get("input_tokens_provenance"), metric.get("output_tokens_provenance"), metric.get("reasoning_tokens_provenance"), metric.get("cache_read_tokens_provenance"), metric.get("cache_write_tokens_provenance"), metric.get("total_tokens_provenance")))
     conn.commit()
     return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
@@ -337,7 +370,7 @@ def record_safe_request_metric(conn: sqlite3.Connection, run_id: str, metric: di
 def record_run_observability(conn: sqlite3.Connection, run_id: str, data: dict[str, Any]) -> None:
     """Add or replace removable enrichment linked to an existing canonical run."""
     task = normalize_task(data.get("task"))
-    for key in ("input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cached_input_tokens_provenance", "uncached_input_tokens_provenance", "total_tokens_provenance"):
+    for key in ("input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cache_read_tokens_provenance", "uncached_input_tokens_provenance", "total_tokens_provenance"):
         value = data.get(key)
         if value is not None and value not in PROVENANCE_VALUES:
             raise ValueError(f"invalid telemetry provenance: {value!r}")
@@ -345,8 +378,8 @@ def record_run_observability(conn: sqlite3.Connection, run_id: str, data: dict[s
     if status not in {"complete", "partial", "unavailable", "error"}:
         raise ValueError("invalid telemetry status")
     now = data.get("created_at") or datetime.now(timezone.utc).isoformat()
-    columns = ["run_id", "schema_version", "event_kind", "task", "primary_provider", "requested_profile", "requested_provider_model_id", "resolved_catalogue_identity_key", "resolved_family", "resolved_generation", "provider_reported_model_id", "effective_identity_status", "reasoning_level", "harness_name", "harness_version", "transport", "invocation_basis", "execution_status", "failure_category", "wall_seconds", "delegation_count", "provider_request_count", "retry_count", "telemetry_status", "token_telemetry_status", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "uncached_input_tokens", "total_tokens", "input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cached_input_tokens_provenance", "uncached_input_tokens_provenance", "total_tokens_provenance", "cost", "currency", "cost_source", "price_snapshot_id", "created_at"]
-    values = [run_id, 1, data.get("event_kind", "delegation"), task, data.get("primary_provider"), data.get("requested_profile"), data.get("requested_provider_model_id"), data.get("resolved_catalogue_identity_key"), data.get("resolved_family"), data.get("resolved_generation"), data.get("provider_reported_model_id"), data.get("effective_identity_status", "unavailable"), data.get("reasoning_level"), data.get("harness_name"), data.get("harness_version"), data.get("transport"), data.get("invocation_basis"), data.get("execution_status", "unknown"), data.get("failure_category"), data.get("wall_seconds"), data.get("delegation_count"), data.get("provider_request_count"), data.get("retry_count"), status, data.get("token_telemetry_status", "unavailable"), data.get("input_tokens"), data.get("output_tokens"), data.get("reasoning_tokens"), data.get("cached_input_tokens"), data.get("uncached_input_tokens"), data.get("total_tokens"), data.get("input_tokens_provenance"), data.get("output_tokens_provenance"), data.get("reasoning_tokens_provenance"), data.get("cached_input_tokens_provenance"), data.get("uncached_input_tokens_provenance"), data.get("total_tokens_provenance"), data.get("cost"), data.get("currency"), data.get("cost_source", "unavailable"), data.get("price_snapshot_id"), now]
+    columns = ["run_id", "schema_version", "event_kind", "task", "primary_provider", "requested_profile", "requested_provider_model_id", "resolved_catalogue_identity_key", "resolved_family", "resolved_generation", "provider_reported_model_id", "effective_identity_status", "reasoning_level", "harness_name", "harness_version", "transport", "invocation_basis", "execution_status", "failure_category", "wall_seconds", "delegation_count", "provider_request_count", "retry_count", "telemetry_status", "token_telemetry_status", "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "uncached_input_tokens", "total_tokens", "input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cache_read_tokens_provenance", "uncached_input_tokens_provenance", "total_tokens_provenance", "cost", "currency", "cost_source", "price_snapshot_id", "created_at"]
+    values = [run_id, 1, data.get("event_kind", "delegation"), task, data.get("primary_provider"), data.get("requested_profile"), data.get("requested_provider_model_id"), data.get("resolved_catalogue_identity_key"), data.get("resolved_family"), data.get("resolved_generation"), data.get("provider_reported_model_id"), data.get("effective_identity_status", "unavailable"), data.get("reasoning_level"), data.get("harness_name"), data.get("harness_version"), data.get("transport"), data.get("invocation_basis"), data.get("execution_status", "unknown"), data.get("failure_category"), data.get("wall_seconds"), data.get("delegation_count"), data.get("provider_request_count"), data.get("retry_count"), status, data.get("token_telemetry_status", "unavailable"), data.get("input_tokens"), data.get("output_tokens"), data.get("reasoning_tokens"), data.get("cache_read_tokens"), data.get("uncached_input_tokens"), data.get("total_tokens"), data.get("input_tokens_provenance"), data.get("output_tokens_provenance"), data.get("reasoning_tokens_provenance"), data.get("cache_read_tokens_provenance"), data.get("uncached_input_tokens_provenance"), data.get("total_tokens_provenance"), data.get("cost"), data.get("currency"), data.get("cost_source", "unavailable"), data.get("price_snapshot_id"), now]
     placeholders = ",".join("?" for _ in columns)
     conn.execute(f"INSERT INTO run_observability({','.join(columns)}) VALUES({placeholders}) ON CONFLICT(run_id) DO UPDATE SET " + ",".join(f"{column}=excluded.{column}" for column in columns[1:]), values)
     conn.commit()
@@ -377,6 +410,8 @@ def delete_feedback(conn: sqlite3.Connection, run_id: str) -> None:
 
 def clear_observability(conn: sqlite3.Connection, *, before: str | None = None) -> dict[str, int]:
     """Delete only observability-owned rows; canonical evidence stays intact."""
+    if before is not None:
+        before = normalize_cutoff(before)
     where = " WHERE created_at < ?" if before else ""
     args = (before,) if before else ()
     obs = conn.execute("SELECT COUNT(*) FROM run_observability" + where, args).fetchone()[0]
