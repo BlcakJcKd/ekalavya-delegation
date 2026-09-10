@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -124,6 +125,24 @@ class EkalavyaCliTests(unittest.TestCase):
         import tomllib
         metadata = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
         self.assertEqual(set(metadata["project"]["scripts"]), {"eka", "ekalavya"})
+
+    def test_required_run_persistence_remains_fail_closed_before_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); self._files(root)
+            prompt = root / "prompt.md"; prompt.write_text("review")
+            with self._xdg(root), patch("ekalavya.cli.record_run", side_effect=OSError("ledger unavailable")), patch("ekalavya.cli.execute") as execute:
+                with self.assertRaises(OSError): main(["run", "haiku", "--workspace", str(root), "--prompt-file", str(prompt), "--task", "review"])
+            execute.assert_not_called()
+
+    def test_optional_telemetry_failure_does_not_invalidate_completed_execution(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); self._files(root)
+            prompt = root / "prompt.md"; prompt.write_text("review")
+            evidence = root / "evidence"; evidence.mkdir(); (evidence / "execution.json").write_text("{}")
+            with self._xdg(root), patch("ekalavya.cli.execute", return_value={"state": "completed", "evidence": str(evidence)}), patch("ekalavya.cli.persist_execution_observability", side_effect=OSError("analytics unavailable")):
+                self.assertEqual(main(["run", "haiku", "--workspace", str(root), "--prompt-file", str(prompt), "--task", "review"]), 0)
+            conn = sqlite3.connect(root / "state" / "ekalavya" / "ledger.sqlite3")
+            self.assertEqual(conn.execute("SELECT status FROM runs").fetchone()[0], "completed")
 
 
 if __name__ == "__main__":

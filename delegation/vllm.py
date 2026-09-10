@@ -794,6 +794,8 @@ def run_vllm_consultation(
     stderr = ""
     provider_success = False
     inference_occurred = False
+    provider_reported_usage: dict[str, int] = {}
+    provider_reported_model_id: str | None = None
     response_metadata: dict[str, Any] = {
         "response_recorded": False,
         "response_file": None,
@@ -827,6 +829,17 @@ def run_vllm_consultation(
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise VLLMFailure("malformed-response", "vLLM response was not valid JSON") from exc
                 response = _response_text(parsed)
+                # Keep only documented numeric usage and explicit model identity;
+                # never retain the provider response object in execution metadata.
+                raw_usage = parsed.get("usage") if isinstance(parsed, dict) else None
+                if isinstance(raw_usage, dict):
+                    provider_reported_usage = {
+                        key: raw_usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "cache_read_tokens", "cache_write_tokens")
+                        if isinstance(raw_usage.get(key), int) and not isinstance(raw_usage.get(key), bool) and raw_usage[key] >= 0
+                    }
+                else:
+                    provider_reported_usage = {}
+                provider_reported_model_id = parsed.get("model") if isinstance(parsed, dict) and isinstance(parsed.get("model"), str) else None
                 provider_success = True
                 inference_occurred = True
                 try:
@@ -906,6 +919,9 @@ def run_vllm_consultation(
         "prompt_recorded": False,
         "credential_recorded": False,
         "stderr_file": "stderr.txt",
+        "provider_reported_usage": provider_reported_usage if provider_success else {},
+        "provider_reported_model_id": provider_reported_model_id if provider_success else None,
+        "request_count": 1 if provider_success else 0,
         **response_metadata,
     }
     _record_execution(record_dir, execution)

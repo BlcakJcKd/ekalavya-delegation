@@ -131,3 +131,24 @@ calculated, and API-equivalent cost must remain separately labelled.
 For a completed call, verify the response-retention metadata and the ledger
 entry before relying on the result. A retained response is evidence of what was
 returned, not proof that the answer is correct.
+
+## Usage observability
+
+Pass an explicit categorical task tag when invoking Ekalavya:
+
+```bash
+eka run <profile> --task review --workspace ... --prompt-file ...
+```
+
+Task values are lowercase bounded slugs (`[a-z0-9][a-z0-9._-]{0,63}`), or
+`unspecified` when omitted. Do not infer a task from prompt text and do not
+ask another model to classify it. The tag is metadata only; it does not route,
+change defaults, change reasoning, or alter provider availability.
+
+`eka usage` reports the local Ekalavya-observed history and separately labels
+honest provider headroom/capability states. Native same-provider subagents and
+activity from provider applications, other clients, or other machines are not
+automatically visible. `eka insights` is deterministic local aggregation and
+must not make model-quality claims from tiny samples. `eka feedback RUN_ID
+--outcome useful|mixed|not-useful` records one replaceable local outcome only;
+feedback never changes routing or defaults.

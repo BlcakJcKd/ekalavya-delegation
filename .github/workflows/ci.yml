@@ -124,6 +124,8 @@ jobs:
           eka profiles --json
           eka doctor --json
           eka bench status --json
+          eka usage --json
+          eka insights --json
 
   public-repository:
     name: Public repository hygiene

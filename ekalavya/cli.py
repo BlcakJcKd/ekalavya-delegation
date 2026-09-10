@@ -18,6 +18,7 @@ from delegation import routing
 from delegation.config import load_config, save_config, set_enabled
 from delegation.status_cli import _print_human, build_report
 from delegation.vllm import inspect_vllm_routes
+from delegation.paths import state_dir
 
 from . import __version__
 from .catalogue import PROMOTION_BASES, load_catalogue, merge_gemini_flash_discovery, promote, save_catalogue
@@ -30,6 +31,9 @@ from .migrate import migrate_all
 from .resolver import resolve
 from benchmark.review_bundle import create_review_bundle
 from .schema import CandidateIdentity, RunIntent
+from .telemetry import persist_execution_observability
+from .quota import collect_snapshots, public_snapshot
+from .usage import build_insights, build_usage, clear_observability, delete_feedback, export_usage, refresh_quotas, set_feedback
 
 
 def _paths() -> tuple[Path, Path, Path]:
@@ -384,7 +388,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if default_db_path().exists():
         try: integrity = connect().execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         except sqlite3.DatabaseError: integrity = False
-    checks = {"config_dir_private": root.exists() and (root.stat().st_mode & 0o777) == 0o700 if root.exists() else True, "catalogue_readable": not cat.exists() or cat.is_file(), "profiles_readable": not prof.exists() or prof.is_file(), "control_file_pair_complete": cat.exists() == prof.exists(), "availability_config_readable": not (root / "config.toml").exists() or (root / "config.toml").is_file(), "ledger_parent": default_db_path().parent.exists(), "ledger_integrity": integrity}
+    legacy = state_dir() / "delegate_runs"
+    legacy_private = True
+    if legacy.exists():
+        paths = [legacy, *legacy.rglob("*")]
+        legacy_private = all((path.stat().st_mode & 0o777) == (0o700 if path.is_dir() else 0o600) for path in paths if not path.is_symlink())
+    checks = {"config_dir_private": root.exists() and (root.stat().st_mode & 0o777) == 0o700 if root.exists() else True, "catalogue_readable": not cat.exists() or cat.is_file(), "profiles_readable": not prof.exists() or prof.is_file(), "control_file_pair_complete": cat.exists() == prof.exists(), "availability_config_readable": not (root / "config.toml").exists() or (root / "config.toml").is_file(), "ledger_parent": default_db_path().parent.exists(), "ledger_integrity": integrity, "legacy_evidence_private": legacy_private}
     _json_or_text(checks, args.json); return 0 if all(checks.values()) else 1
 
 
@@ -397,7 +406,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         catalogue = catalogue + [named_entry]
     if args.profile not in profiles:
         print(f"profile unavailable: {args.profile}; no automatic provider failover", file=sys.stderr); return 2
-    intent = RunIntent(args.profile, args.provider, args.family, args.model, args.reasoning, args.harness, str(args.workspace) if args.workspace else None, str(args.prompt_file) if args.prompt_file else None, args.primary, args.timeout)
+    try:
+        intent = RunIntent(args.profile, args.provider, args.family, args.model, args.reasoning, args.harness, str(args.workspace) if args.workspace else None, str(args.prompt_file) if args.prompt_file else None, args.primary, args.timeout, args.task)
+    except ValueError as exc:
+        print(f"invalid task: {exc}", file=sys.stderr); return 2
     resolution = resolve(intent, profiles[args.profile], catalogue, availability=load_config()); record = resolution.as_dict(); run_id = uuid.uuid4().hex
     conn = connect(); record_run(conn, run_id, intent.__dict__, resolved=record.get("resolved"), status=resolution.state, resolution_reason=resolution.reason, provider=(resolution.candidate.provider if resolution.candidate else None), identity_key=(resolution.candidate.identity_key if resolution.candidate else None)); record_resolution(conn, run_id, intent.__dict__, record)
     if args.prompt_file and resolution.state != "resolved": _json_or_text({"run_id": run_id, **record}, args.json); return 3
@@ -411,7 +423,16 @@ def cmd_run(args: argparse.Namespace) -> int:
             metadata_path = evidence_path / "execution.json"
             digest = hashlib.sha256(metadata_path.read_bytes()).hexdigest() if metadata_path.is_file() else None
             finalize_run(conn, run_id, status="completed" if execution.get("state") == "completed" else "failed", raw_evidence_path=str(evidence_path), raw_evidence_sha256=digest)
-        _json_or_text({"run_id": run_id, **record, "execution": execution}, args.json); return 0 if execution.get("state") == "completed" else 4
+        run_data = {"task": intent.task, "primary_provider": args.primary, "requested_profile": intent.profile, "requested_provider_model_id": args.model, "resolved_catalogue_identity_key": (resolution.candidate.identity_key if resolution.candidate else None), "resolved_family": (resolution.candidate.family if resolution.candidate else None), "resolved_generation": (resolution.candidate.generation if resolution.candidate else None), "reasoning_level": resolution.resolved_reasoning, "harness_name": resolution.resolved_harness, "harness_version": resolution.resolved_harness_version, "transport": resolution.transport, "invocation_basis": "explicit_profile", "effective_identity_status": "provider_reported" if execution.get("provider_reported_model_id") else "unavailable"}
+        telemetry_warning = None
+        try:
+            persist_execution_observability(conn, run_id, run_data=run_data, execution=execution)
+        except Exception as exc:  # optional enrichment must not invalidate provider result
+            telemetry_warning = "usage telemetry could not be persisted"
+            print(f"warning: {telemetry_warning}: {type(exc).__name__}", file=sys.stderr)
+        payload = {"run_id": run_id, **record, "execution": execution}
+        if telemetry_warning: payload["telemetry_warning"] = telemetry_warning
+        _json_or_text(payload, args.json); return 0 if execution.get("state") == "completed" else 4
     _json_or_text({"run_id": run_id, **record}, args.json); return 0 if resolution.state == "resolved" else 3
 
 
@@ -433,6 +454,69 @@ def cmd_bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def _usage_filters(args: argparse.Namespace) -> dict[str, str | None]:
+    return {"task": getattr(args, "task", None), "profile": getattr(args, "profile", None), "provider": getattr(args, "provider", None), "model": getattr(args, "model", None)}
+
+
+def cmd_usage(args: argparse.Namespace) -> int:
+    conn = connect()
+    if args.action in {"delete", "reset", "prune"}:
+        before = args.before if args.action == "prune" else None
+        result = clear_observability(conn, before=before)
+        result["preserved"] = ["runs", "resolution_decisions", "promotion_events", "default_changes", "benchmark evidence", "retained responses", "catalogue/model provenance", "cost_observations"]
+        _json_or_text(result, args.json); return 0
+    if args.action == "feedback":
+        return 2
+    if args.action == "export":
+        output = export_usage(conn, fmt=args.format, period=args.period, by=args.by, filters=_usage_filters(args))
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True, mode=0o700); args.output.write_text(output, encoding="utf-8"); os.chmod(args.output, 0o600)
+        else: print(output, end="" if output.endswith("\n") else "\n")
+        return 0
+    if args.refresh_quota:
+        try: refresh_quotas(conn, live_vllm=True)
+        except Exception as exc: print(f"warning: quota refresh unavailable: {type(exc).__name__}", file=sys.stderr)
+    persisted = [dict(row) for row in conn.execute("SELECT * FROM quota_snapshots q WHERE q.id IN (SELECT MAX(id) FROM quota_snapshots GROUP BY provider,scope_kind,scope_key,resource_kind,window_kind,window_label)")]
+    quotas = [public_snapshot(item) for item in collect_snapshots(live_vllm=False) + persisted]
+    payload = build_usage(conn, period=args.period, by=args.by, filters=_usage_filters(args), quotas=quotas)
+    if args.json: _json_or_text(payload, True)
+    else:
+        print("Ekalavya Usage")
+        print("Provider headroom/capacity")
+        for quota in quotas:
+            value = quota["remaining_value"] if quota.get("remaining_value") is not None else quota.get("percentage")
+            shown = f"{value}{quota.get('units') or ''}" if value is not None else "unknown"
+            print(f"  {quota['provider']:<10} {quota['scope_kind']:<15} {shown:<12} {quota['capability']} ({quota['source']})")
+        print("  unknown means telemetry unavailable; local_capacity is not provider account quota.")
+        print(f"Local Ekalavya history — {args.period}: {payload['summary']['runs']} observed run(s)")
+        print(f"Reported tokens: {payload['summary']['reported_tokens']['value'] if payload['summary']['reported_tokens']['value'] is not None else 'telemetry unavailable'}")
+        print(f"Telemetry coverage: {payload['coverage']['token_telemetry']['available']}/{payload['coverage']['token_telemetry']['eligible']} runs")
+        print(f"Reasoning-token coverage: {payload['coverage']['reasoning_tokens']['available']}/{payload['coverage']['reasoning_tokens']['eligible']} runs")
+        if args.by:
+            for group in payload["groups"]: print(f"  {group['key']}: {group['summary']['runs']} run(s)")
+    return 0
+
+
+def cmd_insights(args: argparse.Namespace) -> int:
+    conn = connect()
+    persisted = [dict(row) for row in conn.execute("SELECT * FROM quota_snapshots q WHERE q.id IN (SELECT MAX(id) FROM quota_snapshots GROUP BY provider,scope_kind,scope_key,resource_kind,window_kind,window_label)")]
+    payload = build_insights(conn, period=args.period, by=args.by, filters=_usage_filters(args), quotas=[public_snapshot(item) for item in collect_snapshots(live_vllm=False) + persisted])
+    _json_or_text(payload, args.json)
+    return 0
+
+
+def cmd_feedback(args: argparse.Namespace) -> int:
+    conn = connect()
+    try:
+        if not args.delete and not args.outcome:
+            raise ValueError("feedback requires --outcome or --delete")
+        if args.delete: delete_feedback(conn, args.run_id)
+        else: set_feedback(conn, args.run_id, args.outcome)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr); return 2
+    _json_or_text({"run_id": args.run_id, "deleted": bool(args.delete), "outcome": None if args.delete else args.outcome}, args.json); return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="ekalavya", description="Ekalavya delegation control plane")
     p.add_argument("--version", action="version", version=__version__); sub=p.add_subparsers(dest="command", required=True)
@@ -450,7 +534,10 @@ def _parser() -> argparse.ArgumentParser:
     b=bench_sub.add_parser("harnesses", help="show detailed harness capabilities"); common(b); b.set_defaults(func=cmd_bench)
     b=bench_sub.add_parser("bundle", help="create an allowlisted private experiment review bundle"); b.add_argument("experiment"); b.add_argument("--output", type=Path); common(b); b.set_defaults(func=cmd_bench)
     q.set_defaults(func=cmd_bench, bench_action=None, json=False)
-    q=sub.add_parser("run"); q.add_argument("profile"); q.add_argument("--provider"); q.add_argument("--family"); q.add_argument("--model"); q.add_argument("--reasoning"); q.add_argument("--harness"); q.add_argument("--workspace", type=Path); q.add_argument("--prompt-file", type=Path); q.add_argument("--primary"); q.add_argument("--timeout", type=int, default=None); q.add_argument("--json", action="store_true"); q.set_defaults(func=cmd_run)
+    q=sub.add_parser("run"); q.add_argument("profile"); q.add_argument("--provider"); q.add_argument("--family"); q.add_argument("--model"); q.add_argument("--reasoning"); q.add_argument("--harness"); q.add_argument("--workspace", type=Path); q.add_argument("--prompt-file", type=Path); q.add_argument("--primary"); q.add_argument("--timeout", type=int, default=None); q.add_argument("--task", default="unspecified"); q.add_argument("--json", action="store_true"); q.set_defaults(func=cmd_run)
+    q=sub.add_parser("usage", help="inspect local observed usage and honest quota status"); q.add_argument("action", nargs="?", choices=["inspect", "export", "prune", "delete", "reset"]); q.add_argument("--period", default="7d"); q.add_argument("--by", choices=["task", "profile", "provider", "model"]); q.add_argument("--task"); q.add_argument("--profile"); q.add_argument("--provider"); q.add_argument("--model"); q.add_argument("--refresh-quota", action="store_true"); q.add_argument("--before"); q.add_argument("--format", choices=["json", "csv"], default="json"); q.add_argument("--output", type=Path); common(q); q.set_defaults(func=cmd_usage)
+    q=sub.add_parser("insights", help="deterministic local usage insights"); q.add_argument("--period", default="7d"); q.add_argument("--by", choices=["task", "profile", "provider", "model"]); q.add_argument("--task"); q.add_argument("--profile"); q.add_argument("--provider"); q.add_argument("--model"); common(q); q.set_defaults(func=cmd_insights)
+    q=sub.add_parser("feedback", help="record or delete current categorical feedback"); q.add_argument("run_id"); q.add_argument("--outcome", choices=["useful", "mixed", "not-useful"]); q.add_argument("--delete", action="store_true"); common(q); q.set_defaults(func=cmd_feedback)
     return p
 
 

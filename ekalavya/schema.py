@@ -4,8 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+
+TASK_UNSPECIFIED = "unspecified"
+TASK_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def normalize_task(value: str | None) -> str:
+    """Validate the explicit, bounded task classification contract."""
+    if value is None or value == "":
+        return TASK_UNSPECIFIED
+    if not isinstance(value, str) or not TASK_RE.fullmatch(value):
+        raise ValueError("task must be a lowercase categorical slug (1-64 chars; [a-z0-9][a-z0-9._-]*)")
+    return value
 
 
 def canonical_hash(value: Any) -> str:
@@ -70,6 +84,10 @@ class RunIntent:
     prompt_file: str | None = None
     primary: str | None = None
     timeout_seconds: int | None = None
+    task: str = TASK_UNSPECIFIED
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "task", normalize_task(self.task))
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,109 @@
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+
+from ekalavya.ledger import clear_observability, connect, delete_feedback, record_run, record_run_observability, record_safe_request_metric, record_resolution, set_feedback
+from ekalavya.schema import RunIntent, normalize_task
+from ekalavya.usage import build_insights, build_usage, period_bounds
+from ekalavya.quota import hosted_quota_statuses
+
+
+class UsageObservabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.conn = connect(Path(self.temp.name) / "ledger.sqlite3")
+
+    def tearDown(self):
+        self.conn.close(); self.temp.cleanup()
+
+    def add_event(self, run_id="r1", **values):
+        record_run(self.conn, run_id, {"profile": values.get("profile", "reviewer"), "provider": values.get("provider", "claude")}, evaluation_class="unknown")
+        record_resolution(self.conn, run_id, {"profile": "reviewer"}, {"state": "resolved", "resolved": {"provider_model_id": values.get("requested_model", "claude-sonnet")}})
+        record_run_observability(self.conn, run_id, {"task": values.get("task", "review"), "requested_profile": values.get("profile", "reviewer"), "primary_provider": values.get("provider", "claude"), "requested_provider_model_id": values.get("requested_model", "claude-sonnet"), "provider_reported_model_id": values.get("effective_model"), "effective_identity_status": "provider_reported" if values.get("effective_model") else "unavailable", "execution_status": values.get("status", "success"), "total_tokens": values.get("tokens", 10), "total_tokens_provenance": "provider_reported", "wall_seconds": values.get("wall", 2.0), "telemetry_status": "complete", "token_telemetry_status": "complete"})
+
+    def test_task_contract_rejects_free_text_and_preserves_unspecified(self):
+        self.assertEqual(normalize_task(None), "unspecified")
+        self.assertEqual(normalize_task("scientific-critique"), "scientific-critique")
+        for value in ("Review this prompt", "A" * 65, "../secret", "review\ntext", ""):
+            if value == "":
+                self.assertEqual(normalize_task(value), "unspecified")
+            else:
+                with self.assertRaises(ValueError): normalize_task(value)
+        self.assertEqual(RunIntent("p", task="coding").task, "coding")
+
+    def test_requested_and_effective_model_are_distinct(self):
+        self.add_event(effective_model="claude-sonnet-4")
+        row = self.conn.execute("SELECT requested_provider_model_id,provider_reported_model_id FROM run_observability").fetchone()
+        self.assertEqual(tuple(row), ("claude-sonnet", "claude-sonnet-4"))
+
+    def test_safe_metric_rejects_private_payload_and_stores_empty_metadata(self):
+        record_run(self.conn, "r", {"profile": "p"})
+        with self.assertRaises(ValueError): record_safe_request_metric(self.conn, "r", {"total_tokens": 4, "prompt": "secret"})
+        record_safe_request_metric(self.conn, "r", {"total_tokens": 4, "total_tokens_provenance": "provider_reported"})
+        self.assertEqual(self.conn.execute("SELECT metadata_json,observability_owned FROM request_metrics").fetchone()[0:2], ("{}", 1))
+
+    def test_ambiguous_and_benchmark_rows_are_not_usage_events(self):
+        self.add_event("ordinary")
+        record_run(self.conn, "bench", {"profile": "p"}, evaluation_class="public_characterization")
+        payload = build_usage(self.conn, period="all")
+        self.assertEqual(payload["summary"]["runs"], 1)
+
+    def test_migration_backfills_only_canonical_delegate_evidence(self):
+        record_run(self.conn, "observed", {"profile": "p", "task": "review"}, provider="claude", identity_key="catalogue-key", status="completed", raw_evidence_path="/private/delegate_runs/x")
+        record_run(self.conn, "imported", {"profile": "p"}, provider="claude", identity_key="catalogue-key", status="imported", raw_evidence_path="/private/delegate_runs/y")
+        self.conn.close()
+        self.conn = connect(Path(self.temp.name) / "ledger.sqlite3")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM run_observability").fetchone()[0], 1)
+        row = self.conn.execute("SELECT task,total_tokens,token_telemetry_status FROM run_observability").fetchone()
+        self.assertEqual(tuple(row), ("review", None, "unavailable"))
+
+    def test_coverage_and_low_sample_latency_guardrails_are_deterministic(self):
+        self.add_event(tokens=None, wall=1.0)
+        payload = build_usage(self.conn, period="all")
+        self.assertIsNone(payload["summary"]["reported_tokens"]["value"])
+        self.assertIsNone(payload["summary"]["latency_seconds"]["median"])
+        self.assertIsNone(payload["summary"]["latency_seconds"]["p90"])
+
+    def test_controls_preserve_canonical_history(self):
+        self.add_event()
+        self.conn.execute("INSERT INTO cost_observations(run_id,billing_mode,cost_source) VALUES('r1','subscription','unavailable')")
+        self.conn.commit()
+        result = clear_observability(self.conn)
+        self.assertGreaterEqual(result["run_observability"], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM resolution_decisions").fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM cost_observations").fetchone()[0], 1)
+
+    def test_period_uses_utc_and_rejects_ambiguous_forms(self):
+        start, end, label = period_bounds("7d")
+        self.assertEqual(start.tzinfo, end.tzinfo)
+        self.assertEqual(label, "7d")
+        with self.assertRaises(ValueError): period_bounds("week")
+
+    def test_insights_are_local_deterministic_and_evidence_aware(self):
+        self.add_event()
+        first = build_insights(self.conn, period="all")
+        second = build_insights(self.conn, period="all")
+        self.assertEqual(first["summary"], second["summary"])
+        self.assertTrue(any(item["kind"] == "descriptive" for item in first["insights"]))
+
+    def test_feedback_replaces_or_deletes_without_mutating_routing_state(self):
+        self.add_event()
+        set_feedback(self.conn, "r1", "useful")
+        set_feedback(self.conn, "r1", "mixed")
+        self.assertEqual(self.conn.execute("SELECT outcome FROM user_feedback WHERE run_id='r1'").fetchone()[0], "mixed")
+        delete_feedback(self.conn, "r1")
+        self.assertIsNone(self.conn.execute("SELECT outcome FROM user_feedback WHERE run_id='r1'").fetchone())
+        with self.assertRaises(ValueError): set_feedback(self.conn, "missing", "useful")
+
+    def test_hosted_quota_states_are_honest_and_scoped(self):
+        snapshots = hosted_quota_statuses()
+        self.assertEqual({row["provider"] for row in snapshots}, {"codex", "claude", "gemini", "deepseek", "minimax"})
+        self.assertTrue(all(row["scope_kind"] == "account" for row in snapshots))
+        self.assertTrue(all(row["percentage"] is None for row in snapshots))
+
+
+if __name__ == "__main__":
+    unittest.main()
