@@ -1,5 +1,4 @@
 include LICENSE
 include LICENSES/Apache-2.0.txt
 include THIRD_PARTY_NOTICES.md
-include provider_templates/codex/model-catalogs/deepseek-v4.json
-include provider_templates/codex/model-catalogs/deepseek-v4.NOTICE.md
+prune provider_templates

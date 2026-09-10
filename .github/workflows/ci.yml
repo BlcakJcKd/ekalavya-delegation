@@ -76,13 +76,11 @@ jobs:
               assert not any(name.endswith("deepseek-v4.json") for name in names)
           with tarfile.open(sdist) as archive:
               names = archive.getnames()
-              for required in (
-                  "provider_templates/codex/model-catalogs/deepseek-v4.json",
-                  "provider_templates/codex/model-catalogs/deepseek-v4.NOTICE.md",
-                  "LICENSES/Apache-2.0.txt",
-                  "THIRD_PARTY_NOTICES.md",
-              ):
-                  assert any(name.endswith(required) for name in names), required
+              assert not any("/provider_templates/" in name for name in names)
+              pkg_info = next(name for name in names if name.endswith("/PKG-INFO"))
+              metadata = email.message_from_bytes(archive.extractfile(pkg_info).read())
+              assert metadata["License-Expression"] == "MIT"
+              assert metadata["License-File"] == "LICENSE"
           PY
       - name: Install the wheel into a clean virtual environment
         run: |
