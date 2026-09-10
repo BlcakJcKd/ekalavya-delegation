@@ -89,7 +89,7 @@ cd "$REPO_ROOT"
 
 AGENTS="deepseek-pro,deepseek-flash,minimax-m3"
 TASKS="scientific_writing"
-MODELS="deepseek-pro=deepseek-v4-pro,deepseek-flash=deepseek-v4-flash,minimax-m3=MiniMax-M3"
+MODELS="deepseek-pro=deepseek-v4-pro,deepseek-flash=deepseek-flash,minimax-m3=MiniMax-M3"
 CROSSOVER="payg-stage2-writing"
 SOURCE_TIER="tier-a-medium"
 

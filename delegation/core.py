@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import routing
+from ekalavya.deepseek import assert_deepseek_pro_exact
 from .paths import log_root as _xdg_log_root
 from .retention import persist_response, persist_text
 
@@ -70,7 +71,7 @@ DELEGATES: dict[str, DelegateSpec] = {
     # "medium"), and MiniMax's profile is already pinned to "high" locally
     # -- neither is an invented flag.
     "deepseek-pro": DelegateSpec("deepseek-pro", "codex-deepseek", "deepseek-v4-pro", "high"),
-    "deepseek-flash": DelegateSpec("deepseek-flash", "codex-deepseek", "deepseek-v4-flash", "high"),
+    "deepseek-flash": DelegateSpec("deepseek-flash", "codex-deepseek", "deepseek-flash", "high"),
     "minimax-m3": DelegateSpec("minimax-m3", "codex-minimax", "MiniMax-M3", "high"),
 }
 
@@ -255,6 +256,7 @@ def run_consultation(
     log_root: Path | None = None,
     caller: str | None = None,
     primary: str | None = None,
+    now=None,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[int, Path]:
     """Run exactly one read-only delegate and retain an auditable local record.
@@ -273,6 +275,8 @@ def run_consultation(
     _check_recursion_guard()
     if delegate_name not in DELEGATES:
         raise ValueError(f"unknown delegate: {delegate_name}")
+    if delegate_name == "deepseek-pro":
+        assert_deepseek_pro_exact(now=now)
     if timeout_seconds <= 0:
         raise ValueError("timeout must be positive")
     normalized_primary = _check_self_provider_guard(delegate_name, primary)

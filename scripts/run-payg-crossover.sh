@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the PAYG candidate crossover: DeepSeek V4 Pro, DeepSeek V4 Flash, and
+# Run the PAYG candidate crossover: DeepSeek V4 Pro, DeepSeek V4.1 Flash, and
 # MiniMax M3 against the three initial frozen tasks (research_python,
 # diagnostic_plot, debug_package), reusing existing evaluators/fixtures and
 # comparing against the already-frozen tier-a-medium evidence. No historical
@@ -93,7 +93,7 @@ cd "$REPO_ROOT"
 
 AGENTS="deepseek-pro,deepseek-flash,minimax-m3"
 TASKS="research_python,diagnostic_plot,debug_package"
-MODELS="deepseek-pro=deepseek-v4-pro,deepseek-flash=deepseek-v4-flash,minimax-m3=MiniMax-M3"
+MODELS="deepseek-pro=deepseek-v4-pro,deepseek-flash=deepseek-flash,minimax-m3=MiniMax-M3"
 CROSSOVER="payg-candidate-crossover"
 SOURCE_TIER="tier-a-medium"
 

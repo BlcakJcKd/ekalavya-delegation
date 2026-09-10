@@ -54,7 +54,7 @@ class DelegateSpecPinningTests(unittest.TestCase):
     def test_deepseek_flash_is_pinned_to_the_flash_slug_via_the_codex_deepseek_launcher(self):
         spec = DELEGATES["deepseek-flash"]
         self.assertEqual(spec.executable, "codex-deepseek")
-        self.assertEqual(spec.model, "deepseek-v4-flash")
+        self.assertEqual(spec.model, "deepseek-flash")
         self.assertEqual(spec.effort, "high")
 
     def test_minimax_m3_is_pinned_via_the_codex_minimax_launcher(self):
@@ -95,7 +95,7 @@ class BuildArgvCodexTransportTests(unittest.TestCase):
 
     def test_deepseek_flash_argv_is_read_only_sandboxed_and_pinned(self):
         command = build_argv(DELEGATES["deepseek-flash"], Path("/tmp/scoped workspace"), TASK)
-        self._assert_read_only_codex_transport_shape(command, "codex-deepseek", "deepseek-v4-flash")
+        self._assert_read_only_codex_transport_shape(command, "codex-deepseek", "deepseek-flash")
 
     def test_minimax_m3_argv_is_read_only_sandboxed_and_pinned(self):
         command = build_argv(DELEGATES["minimax-m3"], Path("/tmp/scoped workspace"), TASK)

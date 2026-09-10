@@ -13,10 +13,11 @@ class PublicProvenanceTests(unittest.TestCase):
         document = json.loads(CATALOG.read_text())
         self.assertEqual(
             [model["slug"] for model in document["models"]],
-            ["deepseek-v4-flash", "deepseek-v4-pro"],
+            ["deepseek-flash", "deepseek-v4-pro"],
         )
         notice = NOTICE.read_text()
         self.assertIn("modified derivative", notice)
+        self.assertIn("deepseek-flash", notice)
         self.assertIn("deepseek-v4-flash", notice)
         self.assertIn("deepseek-v4-pro", notice)
         self.assertIn("Copyright 2025 OpenAI", notice)

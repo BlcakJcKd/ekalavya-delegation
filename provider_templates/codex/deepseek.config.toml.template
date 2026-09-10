@@ -1,4 +1,4 @@
-model = "deepseek-v4-flash"
+model = "deepseek-flash"
 model_provider = "deepseek"
 model_reasoning_effort = "low"
 model_catalog_json = "__CODEX_HOME__/model-catalogs/deepseek-v4.json"

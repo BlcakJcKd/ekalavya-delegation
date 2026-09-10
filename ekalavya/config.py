@@ -9,6 +9,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .schema import CandidateIdentity
+from .deepseek import (
+    DEEPSEEK_FLASH_PROVIDER_MODEL_ID,
+    DEEPSEEK_PRO_PROVIDER_MODEL_ID,
+    DEEPSEEK_REASONING_MAPPING,
+    DEEPSEEK_PROVIDER_REASONING_LEVELS,
+    DEEPSEEK_V4_FLASH_DISPLAY_NAME,
+    DEEPSEEK_V4_FLASH_PROVIDER_MODEL_ID,
+    DEEPSEEK_V4_PRO_DISPLAY_NAME,
+    DEEPSEEK_V41_FLASH_DISPLAY_NAME,
+)
 
 
 def config_root() -> Path:
@@ -103,6 +113,89 @@ def ensure_control_files(target: Path | None = None) -> dict[str, object]:
     from delegation.core import DELEGATES
     catalogue=[]; profiles=[]
     for route, spec in sorted(DELEGATES.items()):
+        if route == "deepseek-flash":
+            capabilities = {
+                "reasoning_values": [spec.effort] if spec.effort else [],
+                "provider_reasoning_values": list(DEEPSEEK_PROVIDER_REASONING_LEVELS),
+                "reasoning_compatibility": DEEPSEEK_REASONING_MAPPING,
+                "context_tokens": 1_000_000,
+                "max_output_tokens": 384_000,
+                "thinking": True,
+                "non_thinking": True,
+                "tool_calls": True,
+                "responses_api": True,
+                "anthropic_api": True,
+                "input_modalities": ["text"],
+                "provider_native_vision": True,
+                "harness_multimodal": False,
+            }
+            historical = CandidateIdentity(
+                "deepseek", "flash", DEEPSEEK_V4_FLASH_PROVIDER_MODEL_ID,
+                DEEPSEEK_V4_FLASH_DISPLAY_NAME, generation="v4",
+                capabilities=capabilities,
+            )
+            old_item = historical.as_dict()
+            old_item.update({
+                "identity_key": historical.identity_key,
+                "lifecycle": "retired",
+                "provider_aliases": [DEEPSEEK_V4_FLASH_PROVIDER_MODEL_ID, "deepseek-v4-flash-vision-exp"],
+                "historical_only": True,
+                "transport": routing.ROUTE_TRANSPORT.get(route),
+            })
+            current = CandidateIdentity(
+                "deepseek", "flash", DEEPSEEK_FLASH_PROVIDER_MODEL_ID,
+                DEEPSEEK_V41_FLASH_DISPLAY_NAME, generation="v4.1",
+                capabilities=capabilities,
+            )
+            item = current.as_dict()
+            item.update({
+                "identity_key": current.identity_key,
+                "lifecycle": "candidate",
+                "legacy_route": route,
+                "execution_route": route,
+                "provider_aliases": [DEEPSEEK_V4_FLASH_PROVIDER_MODEL_ID, "deepseek-v4-flash-vision-exp"],
+                "transport": routing.ROUTE_TRANSPORT.get(route),
+            })
+            catalogue.extend([old_item, item])
+            profiles.append({
+                "name": route,
+                "description": DEEPSEEK_V41_FLASH_DISPLAY_NAME,
+                "default_identity_key": current.identity_key,
+                "permitted_candidates": [current.identity_key],
+                "reasoning_policy": "fixed",
+                "default_reasoning": spec.effort,
+            })
+            continue
+        if route == "deepseek-pro":
+            identity = CandidateIdentity(
+                "deepseek", "pro", DEEPSEEK_PRO_PROVIDER_MODEL_ID,
+                DEEPSEEK_V4_PRO_DISPLAY_NAME, generation="v4",
+                capabilities={
+                    "reasoning_values": [spec.effort] if spec.effort else [],
+                    "provider_reasoning_values": list(DEEPSEEK_PROVIDER_REASONING_LEVELS),
+                    "reasoning_compatibility": DEEPSEEK_REASONING_MAPPING,
+                    "input_modalities": ["text"],
+                    "harness_multimodal": False,
+                },
+            )
+            item = identity.as_dict()
+            item.update({
+                "identity_key": identity.identity_key,
+                "lifecycle": "current",
+                "legacy_route": route,
+                "execution_route": route,
+                "transport": routing.ROUTE_TRANSPORT.get(route),
+            })
+            catalogue.append(item)
+            profiles.append({
+                "name": route,
+                "description": DEEPSEEK_V4_PRO_DISPLAY_NAME,
+                "default_identity_key": identity.identity_key,
+                "permitted_candidates": [identity.identity_key],
+                "reasoning_policy": "fixed",
+                "default_reasoning": spec.effort,
+            })
+            continue
         identity = CandidateIdentity(routing.ROUTE_PROVIDER[route], route, spec.model, route, capabilities={"reasoning_values": [spec.effort] if spec.effort else []})
         item = identity.as_dict(); item.update({"identity_key": identity.identity_key, "lifecycle": "current", "legacy_route": route, "transport": routing.ROUTE_TRANSPORT.get(route)})
         catalogue.append(item)

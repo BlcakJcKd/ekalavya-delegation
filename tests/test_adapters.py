@@ -135,7 +135,7 @@ class AdapterArgvTests(unittest.TestCase):
 
     def test_deepseek_flash_uses_the_codex_deepseek_launcher_pinned_to_high_effort(self):
         self._assert_codex_transport_payg_shape(
-            DeepSeekAdapter(name="deepseek-flash", model="deepseek-v4-flash"), "codex-deepseek", "deepseek-v4-flash",
+            DeepSeekAdapter(name="deepseek-flash", model="deepseek-flash"), "codex-deepseek", "deepseek-flash",
         )
 
     def test_minimax_m3_uses_the_codex_minimax_launcher_pinned_to_high_effort(self):
