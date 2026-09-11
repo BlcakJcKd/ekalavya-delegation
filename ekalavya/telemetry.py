@@ -144,9 +144,10 @@ def persist_execution_observability(conn: Any, run_id: str, *, run_data: dict[st
             metric_rows = [(row, _safe_usage(row, provenance=provenance)) for row in model_rows]
         else:
             metric_rows = [({"model": usage.get("provider_reported_model_id")}, usage)]
+        execution_provider = execution.get("provider") if isinstance(execution.get("provider"), str) else run_data.get("primary_provider")
         for ordinal, (row, row_usage) in enumerate(metric_rows, start=1):
             metric = {key: row_usage[key] for key in ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens", "input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cache_read_tokens_provenance", "cache_write_tokens_provenance", "total_tokens_provenance")}
-            metric.update({"ordinal": ordinal, "model": row.get("model"), "provider": run_data.get("primary_provider")})
+            metric.update({"ordinal": ordinal, "model": row.get("model"), "provider": execution_provider})
             if any(metric.get(key) is not None for key in ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens")):
                 record_safe_request_metric(conn, run_id, metric)
 

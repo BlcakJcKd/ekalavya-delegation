@@ -94,6 +94,15 @@ class UsageObservabilityTests(unittest.TestCase):
             (2, "claude-sonnet-5", 12, 8, None, None, None, "{}"),
         ])
 
+    def test_request_metrics_use_execution_provider_not_primary_provider(self):
+        record_run(self.conn, "cross-provider", {"profile": "haiku"}, provider="claude", identity_key="requested")
+        persist_execution_observability(
+            self.conn, "cross-provider",
+            run_data={"task": "review", "requested_profile": "haiku", "primary_provider": "codex"},
+            execution={"state": "completed", "provider": "claude", "provider_reported_usage": {"input_tokens": 1, "output_tokens": 2}, "usage_provenance": "harness_reported"},
+        )
+        self.assertEqual(self.conn.execute("SELECT provider FROM request_metrics").fetchone()[0], "claude")
+
     def test_invalid_model_usage_projection_is_not_persisted(self):
         record_run(self.conn, "invalid-model-usage", {"profile": "haiku"}, provider="claude", identity_key="requested")
         persist_execution_observability(
