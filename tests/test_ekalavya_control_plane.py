@@ -84,7 +84,8 @@ class EkalavyaControlPlaneTests(unittest.TestCase):
         candidate = CandidateIdentity("claude", "haiku", "claude-haiku", capabilities={"reasoning_values": ["medium"], "harness_values": ["claude"]})
         entry = dict(candidate.as_dict(), identity_key=candidate.identity_key, lifecycle="current", legacy_route="haiku", transport="claude", harness_version="1.2")
         profile = {"default_identity_key": candidate.identity_key, "reasoning_policy": "fixed", "default_reasoning": "medium"}
-        resolved = resolve(RunIntent("haiku", harness="claude"), profile, [entry])
+        with patch("ekalavya.readiness.shutil.which", return_value="/fake/claude"):
+            resolved = resolve(RunIntent("haiku", harness="claude"), profile, [entry])
         self.assertEqual(resolved.state, "resolved")
         material = resolved.as_dict()["resolved"]
         self.assertEqual(material["execution_route"], "haiku")

@@ -13,6 +13,11 @@ from ekalavya.ledger import connect, record_resolution, record_run, record_run_o
 
 
 class EkalavyaCliTests(unittest.TestCase):
+    def setUp(self):
+        self._which = patch("ekalavya.readiness.shutil.which", return_value="/fake/harness")
+        self._which.start()
+        self.addCleanup(self._which.stop)
+
     def _xdg(self, root: Path):
         return patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}, clear=False)
 

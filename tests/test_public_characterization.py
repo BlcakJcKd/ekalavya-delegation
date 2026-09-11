@@ -70,7 +70,8 @@ class PublicCharacterizationTests(unittest.TestCase):
         self.assertIn("gemini-3.8-flash-high", ids)
         current = next(item for item in entries if item["generation"] == "3.7")
         profile = {"default_identity_key": current["identity_key"], "permitted_candidates": [current["identity_key"]], "reasoning_policy": "overrideable", "default_reasoning": "medium"}
-        result = resolve(RunIntent("flash", provider="gemini", reasoning="high"), profile, entries)
+        with patch("ekalavya.readiness.shutil.which", return_value="/fake/agy"):
+            result = resolve(RunIntent("flash", provider="gemini", reasoning="high"), profile, entries)
         self.assertEqual(result.state, "resolved")
         self.assertEqual(result.candidate.provider_model_id, "gemini-3.7-flash-high")
         newer = canonicalize_gemini_flash_generations([], discovered, observed_at=observed, serving_engine_version="1.1.28")
