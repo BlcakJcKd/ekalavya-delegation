@@ -102,6 +102,10 @@ class Resolution:
     reason: str = ""
     state: str = "resolved"
     alternatives: tuple[dict[str, Any], ...] = ()
+    # Stable machine-readable classification for read-only consumers.  The
+    # prose ``reason`` remains useful for humans, but callers must not infer
+    # policy from it.
+    reason_code: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         resolved = self.candidate.as_dict() if self.candidate else None
@@ -123,5 +127,6 @@ class Resolution:
             "execution_route": self.execution_route,
             "reason": self.reason,
             "state": self.state,
+            "reason_code": self.reason_code,
             "alternatives": list(self.alternatives),
         }

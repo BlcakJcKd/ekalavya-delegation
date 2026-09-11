@@ -6,10 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 from contextlib import redirect_stdout
 
-from delegation.config import default_config, parse_config, set_routing_preference
+from delegation.config import default_config, parse_config, set_enabled, set_routing_preference
+from ekalavya.config import ensure_control_files
+from ekalavya.deepseek import DEEPSEEK_PRO_CUTOFF_UTC
 from ekalavya.recommendation import _winner_by_feedback, recommend
 from ekalavya.schema import CandidateIdentity, Resolution, RunIntent
-from ekalavya.cli import main
+from ekalavya.cli import _print_route_human, main
 
 
 def resolved(profile: str, provider: str) -> Resolution:
@@ -75,6 +77,64 @@ class RouteRecommendationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_config({"routing": {"preferences": {"review": {"allowed_targets": ["profile:sonnet"], "excluded_targets": ["sonnet"]}}}})
 
+    def test_preferred_target_cannot_be_excluded_but_valid_preference_forms_remain_valid(self):
+        config = set_routing_preference(default_config(), "review", "preferred_targets", ["sonnet"])
+        self.assertEqual(config["routing"]["preferences"]["review"]["preferred_targets"], ["profile:sonnet"])
+        config = set_routing_preference(config, "review", "allowed_targets", ["sonnet"])
+        self.assertEqual(config["routing"]["preferences"]["review"]["allowed_targets"], ["profile:sonnet"])
+        with self.assertRaisesRegex(ValueError, "preferred_targets.*excluded_targets"):
+            set_routing_preference(config, "review", "excluded_targets", ["sonnet"])
+        with self.assertRaisesRegex(ValueError, "preferred_targets.*excluded_targets"):
+            parse_config({"routing": {"preferences": {"review": {"preferred_targets": ["primary-native"], "excluded_targets": ["primary-native"]}}}})
+
+    def test_primary_native_allowed_and_excluded_is_rejected(self):
+        config = set_routing_preference(default_config(), "review", "allowed_targets", ["primary-native"])
+        with self.assertRaisesRegex(ValueError, "allowed_targets.*excluded_targets"):
+            set_routing_preference(config, "review", "excluded_targets", ["primary-native"])
+
+    def test_custom_task_tag_is_validated_and_preserved(self):
+        config = parse_config({"routing": {"preferences": {"custom.audit": {"preferred_targets": ["sonnet"]}}}})
+        self.assertEqual(config["routing"]["preferences"]["custom.audit"]["preferred_targets"], ["profile:sonnet"])
+
+    def _recommend_one(self, config, profile, entry, *, now=None):
+        return recommend(
+            task="review", primary=None, config=config, profiles=[profile],
+            catalogue=[entry], observed_availability={}, registry={"schema_version": 1, "records": []}, now=now,
+        )
+
+    def test_deepseek_pro_cutoff_is_lifecycle_exclusion(self):
+        entry = {
+            "provider": "deepseek", "family": "pro", "provider_model_id": "deepseek-v4-pro",
+            "display_name": "DeepSeek V4 Pro", "capabilities": {"reasoning_values": ["high"]},
+            "identity_key": "pro", "lifecycle": "current", "legacy_route": "deepseek-pro",
+        }
+        config = set_enabled(set_enabled(default_config(), "providers", "deepseek", True), "models", "deepseek-pro", True)
+        payload = self._recommend_one(config, {"name": "deepseek-pro", "default_identity_key": "pro", "permitted_candidates": ["pro"]}, entry, now=DEEPSEEK_PRO_CUTOFF_UTC)
+        self.assertEqual(payload["excluded"], [{"target": "profile:deepseek-pro", "code": "lifecycle-not-executable", "detail": payload["excluded"][0]["detail"]}])
+        with redirect_stdout(io.StringIO()) as output:
+            _print_route_human(payload, explain=True)
+        self.assertIn("profile:deepseek-pro — lifecycle-not-executable", output.getvalue())
+
+    def test_missing_execution_route_is_missing_route(self):
+        entry = {"provider": "claude", "family": "haiku", "provider_model_id": "claude-haiku", "identity_key": "haiku", "lifecycle": "current"}
+        payload = self._recommend_one(default_config(), {"name": "haiku", "default_identity_key": "haiku", "permitted_candidates": ["haiku"]}, entry)
+        self.assertEqual(payload["excluded"][0]["code"], "missing-route")
+
+    def test_missing_harness_is_harness_unavailable(self):
+        entry = {"provider": "claude", "family": "haiku", "provider_model_id": "claude-haiku", "identity_key": "haiku", "lifecycle": "current", "legacy_route": "haiku", "execution_route": "haiku", "harness": "claude"}
+        with patch("ekalavya.readiness.shutil.which", return_value=None):
+            payload = self._recommend_one(default_config(), {"name": "haiku", "default_identity_key": "haiku", "permitted_candidates": ["haiku"]}, entry)
+        self.assertEqual(payload["excluded"][0]["code"], "harness-unavailable")
+
+    def test_provider_and_model_disabled_have_truthful_exclusions(self):
+        entry = {"provider": "claude", "family": "haiku", "provider_model_id": "claude-haiku", "identity_key": "haiku", "lifecycle": "current", "legacy_route": "haiku", "execution_route": "haiku", "harness": "claude"}
+        provider_disabled = set_enabled(default_config(), "providers", "claude", False)
+        payload = self._recommend_one(provider_disabled, {"name": "haiku", "default_identity_key": "haiku", "permitted_candidates": ["haiku"]}, entry)
+        self.assertEqual(payload["excluded"][0]["code"], "provider-disabled")
+        model_disabled = set_enabled(default_config(), "models", "haiku", False)
+        payload = self._recommend_one(model_disabled, {"name": "haiku", "default_identity_key": "haiku", "permitted_candidates": ["haiku"]}, entry)
+        self.assertEqual(payload["excluded"][0]["code"], "model-disabled")
+
     def test_route_cli_never_calls_execution_or_creates_config(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -83,6 +143,15 @@ class RouteRecommendationTests(unittest.TestCase):
                     self.assertEqual(main(["route", "--task", "review", "--json"]), 0)
             execute.assert_not_called()
             self.assertFalse((root / "config" / "ekalavya" / "config.toml").exists())
+
+    def test_route_cli_loads_evidence_registry_once_for_multiple_candidates(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ensure_control_files(root / "config" / "ekalavya")
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}, clear=False), patch("ekalavya.cli.load_registry", return_value={"schema_version": 1, "records": []}) as loader:
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(["route", "--task", "review", "--json"]), 0)
+            loader.assert_called_once_with()
 
 
 if __name__ == "__main__":

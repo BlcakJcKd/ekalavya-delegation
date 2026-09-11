@@ -14,7 +14,7 @@ from delegation import routing
 from .config import load_profiles
 from .readiness import profile_readiness
 from .resolver import SAME_PROVIDER_NATIVE, resolve
-from .route_evidence import applicable_records
+from .route_evidence import applicable_records, load_registry
 from .schema import RunIntent, normalize_task
 from .targets import named_route_profile
 
@@ -24,22 +24,16 @@ TERMINAL = {"success", "failure", "aborted"}
 
 
 def _reason_code(result: Any, config: dict[str, Any], profile: str) -> str:
-    provider = routing.ROUTE_PROVIDER.get(profile)
-    if profile.startswith("vllm:"):
-        if not config.get("vllm", {}).get(profile[5:], {}).get("enabled", True):
-            return "model-disabled"
-    if result.candidate is not None:
-        provider = result.candidate.provider
-    if provider and not config.get("providers", {}).get(provider, {}).get("enabled", True):
-        return "provider-disabled"
-    if not config.get("models", {}).get(profile, {}).get("enabled", True) and not profile.startswith("vllm:"):
-        return "model-disabled"
+    # The resolver is authoritative for lifecycle, route, harness, and
+    # availability classification.  Keep the prose reason display-only.
+    if getattr(result, "reason_code", None):
+        return result.reason_code
     if result.state == "harness-unavailable":
         return "harness-unavailable"
     if result.state == "invalid-reasoning":
         return "unsupported-reasoning"
     if result.state == "unavailable":
-        return "lifecycle-not-executable" if "lifecycle" in result.reason else "missing-route"
+        return "missing-route"
     return result.state.replace("_", "-")
 
 
@@ -170,6 +164,9 @@ def _winner_by_benchmark(candidates: list[dict[str, Any]]) -> dict[str, Any] | N
 def recommend(*, task: str, primary: str | None, config: dict[str, Any], profiles: list[dict[str, Any]], catalogue: list[dict[str, Any]], observed_availability: dict[str, dict[str, Any]], db_path: Path | None = None, quota_snapshots: list[dict[str, Any]] | None = None, registry: dict[str, Any] | None = None, now: datetime | None = None) -> dict[str, Any]:
     """Return a deterministic recommendation without provider/model activity."""
     task = normalize_task(task)
+    # A direct library caller gets the same once-per-calculation behavior as
+    # the CLI, while the CLI explicitly loads and passes its validated object.
+    registry = registry if registry is not None else load_registry()
     normalized_primary = routing.normalize_primary(primary)
     now = now or datetime.now(timezone.utc)
     policy = config.get("routing", {}).get("preferences", {}).get(task, {})
@@ -197,7 +194,7 @@ def recommend(*, task: str, primary: str | None, config: dict[str, Any], profile
 
     def inspect_profile(name: str, profile: dict[str, Any], entries: list[dict[str, Any]], *, is_vllm: bool = False) -> None:
         target = f"vllm:{name[5:]}" if is_vllm else f"profile:{name}"
-        result = resolve(RunIntent(name, task=task), profile, entries, availability=config)
+        result = resolve(RunIntent(name, task=task), profile, entries, availability=config, now=now)
         if result.state != "resolved" or result.candidate is None:
             exclusions.append({"target": target, "code": _reason_code(result, config, name), "detail": result.reason})
             return

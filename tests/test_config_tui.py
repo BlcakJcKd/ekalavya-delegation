@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from delegation.config import default_config, set_enabled
-from delegation.config_tui import build_rows, diff_summary, rows_to_config, run_interactive_config, set_reason, toggle
+from delegation.config_tui import build_rows, diff_summary, rows_to_config, run_interactive_config, run_interactive_setup, set_reason, toggle
 
 
 class BuildRowsTests(unittest.TestCase):
@@ -202,6 +202,22 @@ class InteractiveBoundaryTests(unittest.TestCase):
             self.assertEqual(run_interactive_config(), 0)
         save.assert_called_once()
         self.assertFalse(save.call_args.args[0]["models"]["flash"]["enabled"])
+
+    def test_invalid_staged_routing_config_is_rejected_before_save(self):
+        config = default_config()
+        rows = build_rows(config)
+        invalid = {section: {name: dict(entry) for name, entry in entries.items()} for section, entries in config.items()}
+        invalid["routing"] = {
+            "preferences": {"review": {"preferred_targets": ["profile:sonnet"], "excluded_targets": ["profile:sonnet"]}},
+            "reserves": {},
+        }
+        with patch("delegation.config_tui.load_config", return_value=config), \
+             patch("delegation.config_tui.inspect_vllm_routes", return_value={}), \
+             patch("curses.wrapper", side_effect=[rows, invalid]), \
+             patch("delegation.config_tui.save_config") as save:
+            with self.assertRaisesRegex(ValueError, "preferred_targets.*excluded_targets"):
+                run_interactive_setup()
+        save.assert_not_called()
 
 
 if __name__ == "__main__":

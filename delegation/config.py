@@ -116,6 +116,16 @@ def _target_list(value: Any, field: str) -> list[str]:
     return targets
 
 
+def _validate_preference_conflicts(task: str, preference: dict[str, list[str]]) -> None:
+    preferred = set(preference.get("preferred_targets", []))
+    allowed = set(preference.get("allowed_targets", []))
+    excluded = set(preference.get("excluded_targets", []))
+    if preferred & excluded:
+        raise ValueError(f"routing preference {task!r} has targets in both preferred_targets and excluded_targets")
+    if allowed & excluded:
+        raise ValueError(f"routing preference {task!r} has targets in both allowed_targets and excluded_targets")
+
+
 def _validate_routing(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("[routing] must be a table")
@@ -142,10 +152,7 @@ def _validate_routing(raw: Any) -> dict[str, Any]:
         for field in _PREFERENCE_KEYS:
             if field in item:
                 preference[field] = _target_list(item[field], f"routing preference {task!r}.{field}")
-        allowed = set(preference.get("allowed_targets", []))
-        excluded = set(preference.get("excluded_targets", []))
-        if allowed & excluded:
-            raise ValueError(f"routing preference {task!r} has targets in both allowed_targets and excluded_targets")
+        _validate_preference_conflicts(task, preference)
         result["preferences"][normalized_task] = preference
     reserves = raw.get("reserves", {})
     if not isinstance(reserves, dict):
@@ -350,8 +357,7 @@ def set_routing_preference(config: dict[str, Any], task: str, field: str, target
         preference[field] = normalized
     else:
         preference.pop(field, None)
-    if set(preference.get("allowed_targets", [])) & set(preference.get("excluded_targets", [])):
-        raise ValueError("routing target cannot be both allowed and excluded")
+    _validate_preference_conflicts(normalized_task, preference)
     if preference:
         policy["preferences"][normalized_task] = preference
     else:

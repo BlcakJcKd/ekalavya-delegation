@@ -36,6 +36,7 @@ from .quota import collect_snapshots, public_snapshot
 from .usage import build_insights, build_usage, clear_observability, delete_feedback, export_usage, refresh_quotas, set_feedback
 from .targets import named_route_profile
 from .recommendation import recommend
+from .route_evidence import load_registry
 
 
 def _paths() -> tuple[Path, Path, Path]:
@@ -416,11 +417,13 @@ def cmd_route(args: argparse.Namespace) -> int:
     root, catalogue_path, profiles_path = _paths()
     try:
         config = load_config()
+        registry = load_registry()
         payload = recommend(
             task=args.task, primary=args.primary, config=config,
             profiles=_profiles(profiles_path), catalogue=load_catalogue(catalogue_path),
             observed_availability=_persisted_model_availability(), db_path=default_db_path(),
             quota_snapshots=_read_quota_snapshots_readonly(),
+            registry=registry,
         )
     except ValueError as exc:
         print(f"route error: {exc}", file=sys.stderr)

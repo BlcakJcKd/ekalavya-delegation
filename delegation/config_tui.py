@@ -22,7 +22,7 @@ import shutil
 from typing import Any
 
 from . import routing
-from .config import load_config, save_config, set_routing_preference
+from .config import load_config, parse_config, save_config, set_routing_preference
 from .vllm import VLLMRouteInfo, inspect_vllm_routes
 
 PROVIDER_ORDER: tuple[str, ...] = ("gemini", "claude", "codex", "deepseek", "minimax")
@@ -394,6 +394,10 @@ def run_interactive_setup() -> dict[str, object]:
     if not isinstance(routing_updated, dict):
         routing_updated = availability_updated
     updated = routing_updated
+    # Validate the complete staged document at the save boundary as well as
+    # during individual preference edits; cancel and invalid staged state
+    # therefore never result in a write.
+    parse_config(updated)
     changes = diff_summary(config, result)
     if updated.get("routing") != config.get("routing"):
         changes.append("routing preferences updated")

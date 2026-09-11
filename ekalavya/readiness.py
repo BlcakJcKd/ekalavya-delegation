@@ -48,6 +48,7 @@ def binding_preflight(
         return {
             "ok": False,
             "reason": "resolved candidate has no configured execution adapter",
+            "reason_code": "missing-route",
             "harness_detected": False,
             "harness_capability": "unavailable",
         }
@@ -56,6 +57,7 @@ def binding_preflight(
             return {
                 "ok": False,
                 "reason": f"configured vLLM route requires harness 'vllm', got {harness!r}",
+                "reason_code": "unsupported-harness",
                 "harness_detected": False,
                 "harness_capability": "unavailable",
             }
@@ -68,6 +70,7 @@ def binding_preflight(
         return {
             "ok": False,
             "reason": f"configured execution adapter {route!r} is unavailable",
+            "reason_code": "missing-route",
             "harness_detected": False,
             "harness_capability": "unavailable",
         }
@@ -75,6 +78,7 @@ def binding_preflight(
         return {
             "ok": False,
             "reason": f"execution adapter {route!r} does not match provider {candidate.get('provider')!r}",
+            "reason_code": "missing-route",
             "harness_detected": False,
             "harness_capability": "unavailable",
         }
@@ -82,6 +86,7 @@ def binding_preflight(
         return {
             "ok": False,
             "reason": f"execution adapter {route!r} requires harness {spec.executable!r}, got {harness!r}",
+            "reason_code": "unsupported-harness",
             "harness_detected": False,
             "harness_capability": "unavailable",
         }
@@ -90,6 +95,7 @@ def binding_preflight(
         return {
             "ok": False,
             "reason": f"resolved model {model!r} contradicts catalogue provider_model_id {candidate_model!r}",
+            "reason_code": "missing-route",
             "harness_detected": False,
             "harness_capability": "unavailable",
         }
@@ -98,6 +104,7 @@ def binding_preflight(
             return {
                 "ok": False,
                 "reason": "configured Gemini route has no exact provider model",
+                "reason_code": "missing-route",
                 "harness_detected": False,
                 "harness_capability": "unavailable",
             }
@@ -108,6 +115,7 @@ def binding_preflight(
                 return {
                     "ok": False,
                     "reason": f"Gemini model {candidate_model!r} contradicts catalogue generation {generation!r}",
+                    "reason_code": "missing-route",
                     "harness_detected": False,
                     "harness_capability": "unavailable",
                 }
@@ -116,6 +124,7 @@ def binding_preflight(
             return {
                 "ok": False,
                 "reason": f"configured Gemini model {candidate_model!r} is not an advertised runtime variant",
+                "reason_code": "missing-route",
                 "harness_detected": False,
                 "harness_capability": "unavailable",
             }
@@ -126,6 +135,7 @@ def binding_preflight(
                 return {
                     "ok": False,
                     "reason": f"unsupported Gemini reasoning setting {reasoning!r}",
+                    "reason_code": "unsupported-reasoning",
                     "harness_detected": False,
                     "harness_capability": "unavailable",
                 }
@@ -134,15 +144,16 @@ def binding_preflight(
                 return {
                     "ok": False,
                     "reason": f"Gemini model variant {candidate_model!r} does not match reasoning {reasoning!r}",
+                    "reason_code": "missing-route",
                     "harness_detected": False,
                     "harness_capability": "unavailable",
                 }
     capable, capability_reason = _registry_capability(harness)
     detected = bool(which(harness))
     if not capable:
-        return {"ok": False, "reason": capability_reason, "harness_detected": detected, "harness_capability": "unsupported", "harness": harness}
+        return {"ok": False, "reason": capability_reason, "reason_code": "harness-unavailable", "harness_detected": detected, "harness_capability": "unsupported", "harness": harness}
     if not detected:
-        return {"ok": False, "reason": f"{harness} not found on PATH", "harness_detected": False, "harness_capability": "supported", "harness": harness}
+        return {"ok": False, "reason": f"{harness} not found on PATH", "reason_code": "harness-unavailable", "harness_detected": False, "harness_capability": "supported", "harness": harness}
     return {"ok": True, "reason": None, "harness_detected": True, "harness_capability": "supported", "harness": harness}
 
 
