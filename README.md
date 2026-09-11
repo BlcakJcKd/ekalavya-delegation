@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/BlcakJcKd/ekalavya-delegation/actions/workflows/ci.yml/badge.svg)](https://github.com/BlcakJcKd/ekalavya-delegation/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version: 0.4.0.dev0](https://img.shields.io/badge/version-0.4.0.dev0-orange.svg)](CHANGELOG.md)
+[![Version: 0.4.0](https://img.shields.io/badge/version-0.4.0-orange.svg)](CHANGELOG.md)
 
 Ekalavya's original source is licensed under the [MIT License](LICENSE).
 Third-party or derived material is distributed under the licences identified
