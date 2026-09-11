@@ -98,7 +98,7 @@ class SelfProviderGuardTests(unittest.TestCase):
             workspace = self._scope(root)
             calls = []
             code, record_dir = run_consultation(
-                "flash", workspace, TASK, log_root=root / "logs",
+                "flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs",
                 run=self._fake_run(calls), primary="claude-code",
             )
             self.assertEqual(code, 0)
@@ -113,7 +113,7 @@ class SelfProviderGuardTests(unittest.TestCase):
             calls = []
             with self.assertRaisesRegex(ValueError, "same-provider external delegation disabled"):
                 run_consultation(
-                    "flash", workspace, TASK, log_root=root / "logs",
+                    "flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs",
                     run=self._fake_run(calls), primary="gemini",
                 )
             self.assertEqual(calls, [])
@@ -139,6 +139,7 @@ class SelfProviderGuardTests(unittest.TestCase):
             for delegate in ("flash", "haiku", "sonnet"):
                 code, _ = run_consultation(
                     delegate, workspace, TASK, log_root=root / "logs",
+                    model="gemini-3.8-flash-medium" if delegate == "flash" else None,
                     run=self._fake_run(calls), primary="codex",
                 )
                 self.assertEqual(code, 0)
@@ -152,6 +153,7 @@ class SelfProviderGuardTests(unittest.TestCase):
             for delegate in ("flash", "haiku", "sonnet"):
                 code, _ = run_consultation(
                     delegate, workspace, TASK, log_root=root / "logs",
+                    model="gemini-3.8-flash-medium" if delegate == "flash" else None,
                     run=self._fake_run(calls), primary="manual",
                 )
                 self.assertEqual(code, 0)
@@ -176,7 +178,7 @@ class SelfProviderGuardTests(unittest.TestCase):
             calls = []
             with self.assertRaisesRegex(ValueError, "unknown --primary value"):
                 run_consultation(
-                    "flash", workspace, TASK, log_root=root / "logs",
+                    "flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs",
                     run=self._fake_run(calls), primary="not-a-real-thing",
                 )
             self.assertEqual(calls, [])
@@ -195,7 +197,7 @@ class SelfProviderGuardTests(unittest.TestCase):
             with patch.dict(os.environ, {DELEGATION_DEPTH_ENV: "1"}, clear=False):
                 with self.assertRaisesRegex(ValueError, "recursive delegation rejected"):
                     run_consultation(
-                        "flash", workspace, TASK, log_root=root / "logs",
+                        "flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs",
                         run=self._fake_run(calls), primary="claude-code",
                     )
             self.assertEqual(calls, [])

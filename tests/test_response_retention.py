@@ -34,7 +34,7 @@ class DurableCoreResponseTests(unittest.TestCase):
 
         with patch("delegation.core.shutil.which", return_value="/usr/bin/fake-delegate"):
             return run_consultation(
-                "flash", workspace, TASK, log_root=root / "logs", run=fake_run, **kwargs,
+                "flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run, **kwargs,
             )
 
     def test_success_is_retained_before_success_metadata_and_replayed_exactly(self):
@@ -66,7 +66,7 @@ class DurableCoreResponseTests(unittest.TestCase):
 
             with patch("delegation.core.shutil.which", return_value="/usr/bin/fake-delegate"):
                 code, record_dir = run_consultation(
-                    "flash", workspace, TASK, log_root=root / "logs", run=slow_run,
+                    "flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=slow_run,
                 )
 
             self.assertEqual(code, 0)
@@ -94,7 +94,7 @@ class DurableCoreResponseTests(unittest.TestCase):
             with patch("delegation.core.shutil.which", return_value="/usr/bin/fake-delegate"), \
                  patch("delegation.core.persist_response", side_effect=OSError("disk full")):
                 code, record_dir = run_consultation(
-                    "flash", workspace, TASK, log_root=root / "logs", run=fake_run,
+                    "flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run,
                 )
 
             metadata = json.loads((record_dir / "execution.json").read_text())
@@ -128,7 +128,7 @@ class DurableCoreResponseTests(unittest.TestCase):
             with patch("delegation.core.shutil.which", return_value="/usr/bin/fake-delegate"):
                 code, record_dir = run_consultation(
                     "flash", workspace, TASK, timeout_seconds=1,
-                    log_root=root / "logs", run=timeout_run,
+                    model="gemini-3.8-flash-medium", log_root=root / "logs", run=timeout_run,
                 )
 
             metadata = json.loads((record_dir / "execution.json").read_text())
@@ -168,7 +168,7 @@ class DurableCoreResponseTests(unittest.TestCase):
             with patch("delegation.core.shutil.which", return_value="/usr/bin/fake-delegate"):
                 with self.assertRaisesRegex(ValueError, "outside a repository"):
                     run_consultation(
-                        "flash", workspace, TASK, log_root=repository / "runs", run=fake_run,
+                        "flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=repository / "runs", run=fake_run,
                     )
             self.assertEqual(calls, [])
 

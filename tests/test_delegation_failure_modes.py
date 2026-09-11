@@ -48,7 +48,7 @@ class CaseAInvalidScopeTests(unittest.TestCase):
             calls, fake_run = self._run_spy()
 
             with self.assertRaisesRegex(ValueError, "scope marker"):
-                run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
 
             self.assertEqual(calls, [])
             self.assertEqual(_snapshot(workspace), before)
@@ -63,7 +63,7 @@ class CaseAInvalidScopeTests(unittest.TestCase):
             calls, fake_run = self._run_spy()
 
             with self.assertRaisesRegex(ValueError, "invalid scope marker JSON"):
-                run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
 
             self.assertEqual(calls, [])
             self.assertEqual(_snapshot(workspace), before)
@@ -78,7 +78,7 @@ class CaseAInvalidScopeTests(unittest.TestCase):
             calls, fake_run = self._run_spy()
 
             with self.assertRaisesRegex(ValueError, r'mode.*read-only'):
-                run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
 
             self.assertEqual(calls, [])
             self.assertEqual(_snapshot(workspace), before)
@@ -92,7 +92,7 @@ class CaseAInvalidScopeTests(unittest.TestCase):
             calls, fake_run = self._run_spy()
 
             with self.assertRaisesRegex(ValueError, r'mode.*read-only'):
-                run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
 
             self.assertEqual(calls, [])
 
@@ -128,7 +128,7 @@ class CaseBTimeoutTests(unittest.TestCase):
                 )
 
             exit_code, record_dir = run_consultation(
-                "flash", workspace, TASK, timeout_seconds=1, log_root=root / "logs", run=sleepy_run,
+                "flash", workspace, TASK, timeout_seconds=1, model="gemini-3.8-flash-medium", log_root=root / "logs", run=sleepy_run,
             )
 
             self.assertEqual(exit_code, 124)
@@ -155,7 +155,7 @@ class CaseBTimeoutTests(unittest.TestCase):
                 raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
             exit_code, record_dir = run_consultation(
-                "flash", workspace, TASK, timeout_seconds=1, log_root=log_root, run=timeout_run,
+                "flash", workspace, TASK, timeout_seconds=1, model="gemini-3.8-flash-medium", log_root=log_root, run=timeout_run,
             )
             self.assertEqual(exit_code, 124)
             self.assertTrue(record_dir.is_relative_to(log_root))
@@ -186,7 +186,7 @@ class CaseCMissingExecutableTests(unittest.TestCase):
             # real installed binary, it only fakes resolution for this call.
             with patch.object(core.shutil, "which", return_value=None):
                 with self.assertRaisesRegex(RuntimeError, "delegate executable is unavailable: agy"):
-                    run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                    run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
 
             self.assertEqual(calls, [], "no subprocess should launch when the executable is missing")
             self.assertEqual(_snapshot(workspace), before)
@@ -206,7 +206,7 @@ class CaseCMissingExecutableTests(unittest.TestCase):
 
             with patch.object(core.shutil, "which", side_effect=selective_which):
                 with self.assertRaises(RuntimeError):
-                    run_consultation("flash", workspace, TASK, log_root=root / "logs")
+                    run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs")
 
             # Only the requested delegate's executable was ever probed; the
             # implementation never tries a different DELEGATES entry as a fallback.

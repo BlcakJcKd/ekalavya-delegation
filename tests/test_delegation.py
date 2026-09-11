@@ -22,12 +22,12 @@ TASK = 'Inspect "quoted" values\non two lines; do not modify anything.'
 
 class DelegationArgvTests(unittest.TestCase):
     def test_flash_read_only_argv_is_pinned_sandboxed_and_prompt_is_atomic(self):
-        command = build_argv(DELEGATES["flash"], Path("/tmp/scoped workspace"), TASK)
+        command = build_argv(DELEGATES["flash"], Path("/tmp/scoped workspace"), TASK, model="gemini-3.8-flash-medium", effort="low")
         self.assertEqual(command[0], "agy")
         self.assertEqual(command[command.index("--mode") + 1], "plan")
         self.assertIn("--sandbox", command)
-        self.assertEqual(command[command.index("--model") + 1], "gemini-3.7-flash-medium")
-        self.assertEqual(command[command.index("--effort") + 1], "medium")
+        self.assertEqual(command[command.index("--model") + 1], "gemini-3.8-flash-medium")
+        self.assertEqual(command[command.index("--effort") + 1], "low")
         self.assertEqual(command[-2:], ["-p", command[-1]])
         self.assertIn(TASK, command[-1])
         self._assert_no_dangerous_or_recursive_surface(command)
@@ -133,7 +133,7 @@ class DelegationExecutionTests(unittest.TestCase):
             def timeout_run(argv, **kwargs):
                 raise subprocess.TimeoutExpired(argv, kwargs["timeout"], output="partial", stderr="timeout")
 
-            code, record_dir = run_consultation("flash", workspace, TASK, timeout_seconds=1, log_root=root / "logs", run=timeout_run)
+            code, record_dir = run_consultation("flash", workspace, TASK, timeout_seconds=1, log_root=root / "logs", model="gemini-3.8-flash-medium", effort="low", run=timeout_run)
             self.assertEqual(code, 124)
             record = json.loads((record_dir / "execution.json").read_text())
             self.assertTrue(record["timed_out"])
@@ -146,7 +146,7 @@ class DelegationExecutionTests(unittest.TestCase):
             workspace = root / "unscoped"
             workspace.mkdir()
             with self.assertRaises(ValueError):
-                run_consultation("flash", workspace, TASK, log_root=root / "logs")
+                run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs")
             with self.assertRaises(ValueError):
                 run_consultation("not-a-delegate", workspace, TASK, log_root=root / "logs")
 
@@ -156,10 +156,10 @@ class DelegationExecutionTests(unittest.TestCase):
             workspace = self._scope(root)
             (workspace / "linked-input").symlink_to(workspace / "input.txt")
             with self.assertRaisesRegex(ValueError, "symlinks"):
-                run_consultation("flash", workspace, TASK, log_root=root / "logs")
+                run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs")
             (workspace / "linked-input").unlink()
             with self.assertRaisesRegex(ValueError, "outside"):
-                run_consultation("flash", workspace, TASK, log_root=workspace / "logs")
+                run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=workspace / "logs")
 
 
 class DelegationRecursionGuardTests(unittest.TestCase):
@@ -186,7 +186,7 @@ class DelegationRecursionGuardTests(unittest.TestCase):
 
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(DELEGATION_DEPTH_ENV, None)
-                code, _ = run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                code, _ = run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
             self.assertEqual(code, 0)
             self.assertEqual(len(called), 1)
 
@@ -203,7 +203,7 @@ class DelegationRecursionGuardTests(unittest.TestCase):
             for depth in ("1", "2", "5"):
                 with patch.dict(os.environ, {DELEGATION_DEPTH_ENV: depth}, clear=False):
                     with self.assertRaisesRegex(ValueError, "recursive delegation rejected"):
-                        run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                        run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
             self.assertEqual(called, [], "no model process should be launched on a rejected call")
 
     def test_malformed_depth_is_rejected_safely_without_launching_a_process(self):
@@ -218,7 +218,7 @@ class DelegationRecursionGuardTests(unittest.TestCase):
 
             with patch.dict(os.environ, {DELEGATION_DEPTH_ENV: "not-a-number"}, clear=False):
                 with self.assertRaisesRegex(ValueError, "malformed"):
-                    run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                    run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
             self.assertEqual(called, [])
 
     def test_zero_depth_is_treated_as_outside_a_delegated_context(self):
@@ -232,7 +232,7 @@ class DelegationRecursionGuardTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
 
             with patch.dict(os.environ, {DELEGATION_DEPTH_ENV: "0"}, clear=False):
-                code, _ = run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                code, _ = run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
             self.assertEqual(code, 0)
             self.assertEqual(len(called), 1)
 
@@ -248,7 +248,7 @@ class DelegationRecursionGuardTests(unittest.TestCase):
 
             with patch.dict(os.environ, {}, clear=False):
                 os.environ.pop(DELEGATION_DEPTH_ENV, None)
-                run_consultation("flash", workspace, TASK, log_root=root / "logs", run=fake_run)
+                run_consultation("flash", workspace, TASK, model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
             self.assertEqual(seen_env[DELEGATION_DEPTH_ENV], "1")
 
 

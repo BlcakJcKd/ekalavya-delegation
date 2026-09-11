@@ -58,7 +58,11 @@ def check(delegates: list[str] | None = None) -> dict[str, object]:
         code, help_text = _capture([spec.executable, *HELP_ARGS.get(name, ("--help",))])
         missing = [value for value in REQUIRED_HELP[name] if value not in help_text]
         checks.append({"name": name + ": supported read-only flags", "ok": code == 0 and not missing, "detail": "OK" if not missing else "missing: " + ", ".join(missing)})
-        command = build_argv(spec, Path("<WORKSPACE>"), "<PROMPT>")
+        command = build_argv(
+            spec, Path("<WORKSPACE>"), "<PROMPT>",
+            model="<RESOLVED_MODEL>" if name == "flash" else None,
+            effort="<RESOLVED_EFFORT>" if name == "flash" else None,
+        )
         dangerous = [value for value in command if "dangerously" in value or "bypass" in value or value == "danger-full-access"]
         checks.append({
             "name": name + ": read-only argv", "ok": not dangerous and command[-1].endswith("<PROMPT>\n"),
@@ -67,7 +71,7 @@ def check(delegates: list[str] | None = None) -> dict[str, object]:
         })
     if "flash" in selected and shutil.which("agy"):
         code, models = _capture(["agy", "models"])
-        checks.append({"name": "flash: requested model", "ok": code == 0 and DELEGATES["flash"].model in models, "detail": DELEGATES["flash"].model})
+        checks.append({"name": "flash: requested model", "ok": code == 0, "detail": "resolved from Ekalavya catalogue at execution time"})
     if any(name in selected for name in ("terra", "luna")) and shutil.which("codex"):
         code, models = _capture(["codex", "debug", "models"])
         for name in ("terra", "luna"):

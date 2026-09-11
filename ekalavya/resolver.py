@@ -107,7 +107,11 @@ def resolve(
         return Resolution(intent, None, reason=f"unsupported harness {intent.harness!r}; supported: {list(supported_harnesses)!r}", state="invalid-harness", alternatives=alternatives)
     route = chosen.get("execution_route") or chosen.get("route") or chosen.get("legacy_route")
     harness = intent.harness or profile.get("harness") or chosen.get("harness") or chosen.get("serving_engine") or chosen.get("transport")
-    preflight = binding_preflight(chosen, route, harness)
+    preflight = binding_preflight(
+        chosen, route, harness,
+        model=chosen.get("provider_model_id"),
+        reasoning=reasoning,
+    )
     if not preflight["ok"]:
         return Resolution(intent, None, reason=str(preflight["reason"]), state="harness-unavailable", alternatives=alternatives)
     candidate = CandidateIdentity(**{k: chosen.get(k) for k in CandidateIdentity.__dataclass_fields__})

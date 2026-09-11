@@ -8,6 +8,7 @@ provider CLI or alter user-owned control files.
 from __future__ import annotations
 
 import shutil
+import re
 from typing import Any, Callable
 
 from delegation import routing
@@ -37,6 +38,8 @@ def binding_preflight(
     route: str | None,
     harness: str | None,
     *,
+    model: str | None = None,
+    reasoning: Any = None,
     which: Callable[[str], str | None] | None = None,
 ) -> dict[str, Any]:
     """Validate the deterministic local execution contract before a launch."""
@@ -82,6 +85,58 @@ def binding_preflight(
             "harness_detected": False,
             "harness_capability": "unavailable",
         }
+    candidate_model = candidate.get("provider_model_id")
+    if model is not None and model != candidate_model:
+        return {
+            "ok": False,
+            "reason": f"resolved model {model!r} contradicts catalogue provider_model_id {candidate_model!r}",
+            "harness_detected": False,
+            "harness_capability": "unavailable",
+        }
+    if route == "flash":
+        if not isinstance(candidate_model, str) or not candidate_model:
+            return {
+                "ok": False,
+                "reason": "configured Gemini route has no exact provider model",
+                "harness_detected": False,
+                "harness_capability": "unavailable",
+            }
+        generation = candidate.get("generation")
+        if generation:
+            match = re.match(r"^gemini-(?P<generation>[^-]+)-", candidate_model)
+            if match and str(match.group("generation")) != str(generation):
+                return {
+                    "ok": False,
+                    "reason": f"Gemini model {candidate_model!r} contradicts catalogue generation {generation!r}",
+                    "harness_detected": False,
+                    "harness_capability": "unavailable",
+                }
+        variants = candidate.get("runtime_variants") or []
+        if variants and not any(isinstance(item, dict) and item.get("provider_model_id") == candidate_model for item in variants):
+            return {
+                "ok": False,
+                "reason": f"configured Gemini model {candidate_model!r} is not an advertised runtime variant",
+                "harness_detected": False,
+                "harness_capability": "unavailable",
+            }
+        if reasoning is not None:
+            capabilities = candidate.get("capabilities") or {}
+            supported = capabilities.get("reasoning_values") or []
+            if supported and reasoning not in supported:
+                return {
+                    "ok": False,
+                    "reason": f"unsupported Gemini reasoning setting {reasoning!r}",
+                    "harness_detected": False,
+                    "harness_capability": "unavailable",
+                }
+            matching = next((item for item in variants if isinstance(item, dict) and item.get("provider_model_id") == candidate_model), None)
+            if matching and matching.get("reasoning") and matching.get("reasoning") != reasoning:
+                return {
+                    "ok": False,
+                    "reason": f"Gemini model variant {candidate_model!r} does not match reasoning {reasoning!r}",
+                    "harness_detected": False,
+                    "harness_capability": "unavailable",
+                }
     capable, capability_reason = _registry_capability(harness)
     detected = bool(which(harness))
     if not capable:
@@ -121,9 +176,39 @@ def profile_readiness(
             "harness_capability": "unavailable",
             "availability_observed_at": None,
         }
+    # Generation-level catalogue entries carry exact runtime variants.  Status
+    # must validate the same variant execution will resolve for the profile's
+    # effort, rather than validating the parent's historical medium ID.
+    selected_reasoning = profile.get("default_reasoning")
+    variants = candidate.get("runtime_variants") or []
+    if selected_reasoning is not None and variants:
+        selected_variant = next(
+            (item for item in variants
+             if isinstance(item, dict) and item.get("reasoning") == selected_reasoning),
+            None,
+        )
+        if selected_variant is None:
+            return {
+                "profile_configured": True,
+                "execution_route": candidate.get("execution_route") or candidate.get("route") or candidate.get("legacy_route"),
+                "resolved_harness": profile.get("harness") or candidate.get("harness") or candidate.get("serving_engine") or candidate.get("transport"),
+                "harness_ready": "unavailable",
+                "readiness_reason": f"harness-unavailable: no runtime variant supports reasoning {selected_reasoning!r}",
+                "harness_detected": False,
+                "harness_capability": "unavailable",
+                "availability_observed_at": None,
+            }
+        candidate = dict(candidate)
+        candidate.update({key: value for key, value in selected_variant.items() if key != "lifecycle"})
+        candidate["variant"] = selected_reasoning
     selected_harness = profile.get("harness") or candidate.get("harness") or candidate.get("serving_engine") or candidate.get("transport")
     selected_route = candidate.get("execution_route") or candidate.get("route") or candidate.get("legacy_route")
-    checked = binding_preflight(candidate, selected_route, selected_harness, which=which)
+    checked = binding_preflight(
+        candidate, selected_route, selected_harness,
+        model=candidate.get("provider_model_id"),
+        reasoning=selected_reasoning,
+        which=which,
+    )
     observed = (availability or {}).get(str(profile["default_identity_key"]))
     if not checked["ok"]:
         return {

@@ -35,7 +35,7 @@ class AuditResponseStatusTests(unittest.TestCase):
             def fake_run(argv, **kwargs):
                 return subprocess.CompletedProcess(argv, 0, stdout="nothing material to add", stderr="")
 
-            code, record = run_consultation("flash", workspace, "task", log_root=root / "logs", run=fake_run)
+            code, record = run_consultation("flash", workspace, "task", model="gemini-3.8-flash-medium", log_root=root / "logs", run=fake_run)
             metadata = json.loads((record / "execution.json").read_text())
             self.assertEqual(code, 0)
             self.assertEqual(metadata["response_status"], "text-returned")

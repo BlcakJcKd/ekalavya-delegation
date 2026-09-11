@@ -54,7 +54,7 @@ class ClaudeOrchestrationDryRunTests(unittest.TestCase):
             exit_code, record_dir = run_consultation(
                 "flash", workspace, TASK,
                 timeout_seconds=42, log_root=log_root, caller="claude-code",
-                run=mocked_antigravity,
+                model="gemini-3.8-flash-medium", effort="low", run=mocked_antigravity,
             )
 
             # correct argv
@@ -62,8 +62,8 @@ class ClaudeOrchestrationDryRunTests(unittest.TestCase):
             self.assertEqual(argv[0], "agy")
             self.assertEqual(argv[argv.index("--mode") + 1], "plan")
             self.assertIn("--sandbox", argv)
-            self.assertEqual(argv[argv.index("--model") + 1], "gemini-3.7-flash-medium")
-            self.assertEqual(argv[argv.index("--effort") + 1], "medium")
+            self.assertEqual(argv[argv.index("--model") + 1], "gemini-3.8-flash-medium")
+            self.assertEqual(argv[argv.index("--effort") + 1], "low")
             self.assertEqual(argv[-2], "-p")
             self.assertIn(TASK, argv[-1])
 
@@ -81,8 +81,8 @@ class ClaudeOrchestrationDryRunTests(unittest.TestCase):
             self.assertEqual((record_dir / "stdout.txt").read_text(), MOCKED_ANTIGRAVITY_RESPONSE)
 
             record = json.loads((record_dir / "execution.json").read_text())
-            self.assertEqual(record["requested_model"], "gemini-3.7-flash-medium")
-            self.assertEqual(record["requested_effort"], "medium")
+            self.assertEqual(record["requested_model"], "gemini-3.8-flash-medium")
+            self.assertEqual(record["requested_effort"], "low")
             self.assertEqual(record["timeout_seconds"], 42)
             self.assertEqual(record["caller"], "claude-code")
             self.assertFalse(record["timed_out"])

@@ -48,13 +48,16 @@ class DelegateSpec:
 
     name: str
     executable: str
-    model: str
+    model: str | None
     effort: str | None
     mode: str = "consult"
 
 
 DELEGATES: dict[str, DelegateSpec] = {
-    "flash": DelegateSpec("flash", "agy", "gemini-3.7-flash-medium", "medium"),
+    # Gemini model identity is resolved from Ekalavya's catalogue at runtime.
+    # Keeping no generation in this transport spec prevents a stale wrapper
+    # pin from silently selecting a nearby model.
+    "flash": DelegateSpec("flash", "agy", None, None),
     "haiku": DelegateSpec("haiku", "claude", "claude-haiku-4-5-20251001", "medium"),
     "sonnet": DelegateSpec("sonnet", "claude", "claude-sonnet-5", "medium"),
     # Stable cross-provider routes for non-Codex primaries. Their inference
@@ -93,7 +96,14 @@ Task:
 """
 
 
-def build_argv(spec: DelegateSpec, workspace: Path, task: str) -> list[str]:
+def build_argv(
+    spec: DelegateSpec,
+    workspace: Path,
+    task: str,
+    *,
+    model: str | None = None,
+    effort: str | None = None,
+) -> list[str]:
     """Build a documented, non-bypass read-only consultation argv list.
 
     The final prompt remains one argv item.  The caller uses ``workspace`` as
@@ -102,19 +112,23 @@ def build_argv(spec: DelegateSpec, workspace: Path, task: str) -> list[str]:
     a Codex primary from using that transport as a recursive same-provider hop.
     """
     prompt = _read_only_instruction(task, workspace)
+    selected_model = model if model is not None else spec.model
+    selected_effort = effort if effort is not None else spec.effort
+    if spec.name == "flash" and not selected_model:
+        raise ValueError("flash execution requires a resolved provider model")
     if spec.name in {"haiku", "sonnet"}:
         return [
             "claude", "--output-format", "json", "--no-session-persistence",
             "--safe-mode", "--permission-mode", "plan",
             "--tools", ",".join(READ_ONLY_CLAUDE_TOOLS),
             "--allowedTools", ",".join(READ_ONLY_CLAUDE_TOOLS),
-            "--model", spec.model, "--effort", spec.effort or "medium",
+            "--model", selected_model, "--effort", selected_effort or "medium",
             "-p", prompt,
         ]
     if spec.name == "flash":
         return [
             "agy", "--output-format", "json", "--mode", "plan", "--sandbox",
-            "--model", spec.model, "--effort", spec.effort or "medium",
+            "--model", selected_model, "--effort", selected_effort or "medium",
             "-p", prompt,
         ]
     if spec.executable in {"codex-deepseek", "codex-minimax"}:
@@ -127,14 +141,14 @@ def build_argv(spec: DelegateSpec, workspace: Path, task: str) -> list[str]:
         return [
             spec.executable, "exec", "--ephemeral", "--skip-git-repo-check",
             "--sandbox", "read-only", "--cd", str(workspace), "--json",
-            "--model", spec.model, "--config", f'model_reasoning_effort="{spec.effort or "high"}"',
+            "--model", selected_model, "--config", f'model_reasoning_effort="{selected_effort or "high"}"',
             prompt,
         ]
     if spec.name in {"codex", "terra", "luna"}:
         return [
             "codex", "exec", "--ephemeral", "--skip-git-repo-check",
             "--sandbox", "read-only", "--cd", str(workspace),
-            "--model", spec.model, "--config", f'model_reasoning_effort="{spec.effort or "medium"}"',
+            "--model", selected_model, "--config", f'model_reasoning_effort="{selected_effort or "medium"}"',
             prompt,
         ]
     raise ValueError(f"unsupported delegate: {spec.name}")
@@ -258,6 +272,13 @@ _CLAUDE_MODEL_USAGE_FIELDS = {
     "cacheReadInputTokens": "cache_read_tokens",
     "cacheCreationInputTokens": "cache_write_tokens",
 }
+_AGY_USAGE_FIELDS = {
+    "input_tokens": "input_tokens",
+    "output_tokens": "output_tokens",
+    "thinking_tokens": "reasoning_tokens",
+    "cache_read_tokens": "cache_read_tokens",
+    "total_tokens": "total_tokens",
+}
 
 def _claude_fresh_one_shot(argv: list[str]) -> bool:
     """Whether this exact Claude argv is a non-resumed, ephemeral query."""
@@ -338,6 +359,28 @@ def _claude_usage_projection(
     return None, rows, None
 
 
+def _agy_usage_projection(stdout: str) -> tuple[dict[str, int] | None, str | None]:
+    """Project only documented numeric AGY usage fields from its JSON result."""
+    try:
+        record = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return None, "AGY structured result was not valid JSON; telemetry was not inferred"
+    if not isinstance(record, dict) or not isinstance(record.get("usage"), dict):
+        return None, "AGY structured usage was absent or malformed; telemetry was not inferred"
+    usage = record["usage"]
+    projection: dict[str, int] = {}
+    for source, destination in _AGY_USAGE_FIELDS.items():
+        value = usage.get(source)
+        if value is None:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None, "AGY structured usage was malformed; telemetry was not inferred"
+        projection[destination] = value
+    if not projection:
+        return None, "AGY structured usage had no valid token fields; telemetry was not inferred"
+    return projection, None
+
+
 def _validated_log_root(log_root: Path, workspace: Path) -> Path:
     """Resolve a private run root outside both the scope and Git trees."""
     resolved = log_root.expanduser().resolve()
@@ -357,6 +400,8 @@ def run_consultation(
     log_root: Path | None = None,
     caller: str | None = None,
     primary: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
     now=None,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[int, Path]:
@@ -387,7 +432,7 @@ def run_consultation(
     executable = shutil.which(spec.executable)
     if not executable:
         raise RuntimeError(f"delegate executable is unavailable: {spec.executable}")
-    argv = build_argv(spec, workspace, task)
+    argv = build_argv(spec, workspace, task, model=model, effort=effort)
     resolved_log_root = _validated_log_root(log_root or default_log_root(), workspace)
     record_dir = _record_path(resolved_log_root, delegate_name)
     record_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -426,6 +471,8 @@ def run_consultation(
         usage_projection, model_usage_projections, usage_warning = _claude_usage_projection(
             stdout, fresh_one_shot=_claude_fresh_one_shot(argv),
         )
+    elif spec.name == "flash":
+        usage_projection, usage_warning = _agy_usage_projection(stdout)
 
     provider_success = exit_code == 0
     inference_occurred = provider_success and bool(stdout.strip())
@@ -481,8 +528,8 @@ def run_consultation(
         "transport": routing.ROUTE_TRANSPORT.get(spec.name, spec.executable),
         "caller": resolved_caller,
         "declared_primary": normalized_primary or "not-declared",
-        "requested_model": spec.model,
-        "requested_effort": spec.effort,
+        "requested_model": model if model is not None else spec.model,
+        "requested_effort": effort if effort is not None else spec.effort,
         "workspace": str(workspace),
         "started_at": started_at,
         "ended_at": datetime.now(timezone.utc).isoformat(),

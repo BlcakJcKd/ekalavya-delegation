@@ -113,6 +113,34 @@ def ensure_control_files(target: Path | None = None) -> dict[str, object]:
     from delegation.core import DELEGATES
     catalogue=[]; profiles=[]
     for route, spec in sorted(DELEGATES.items()):
+        if route == "flash":
+            # The initial control files need a historical, deterministic
+            # identity so discovery can add/promote newer generations.  This
+            # is catalogue bootstrap data only; execution always receives an
+            # exact model from the resolved catalogue variant.
+            identity = CandidateIdentity(
+                "gemini", "flash", "gemini-3.7-flash-medium", "flash",
+                capabilities={"reasoning_values": ["medium"]},
+            )
+            item = identity.as_dict()
+            item.update({
+                "identity_key": identity.identity_key,
+                "lifecycle": "current",
+                "legacy_route": route,
+                "execution_route": route,
+                "harness": spec.executable,
+                "transport": routing.ROUTE_TRANSPORT.get(route),
+            })
+            catalogue.append(item)
+            profiles.append({
+                "name": route,
+                "description": "Gemini Flash",
+                "default_identity_key": identity.identity_key,
+                "permitted_candidates": [identity.identity_key],
+                "reasoning_policy": "overrideable",
+                "default_reasoning": "medium",
+            })
+            continue
         if route == "deepseek-flash":
             capabilities = {
                 "reasoning_values": [spec.effort] if spec.effort else [],

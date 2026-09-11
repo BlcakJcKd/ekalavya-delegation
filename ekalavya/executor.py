@@ -19,7 +19,12 @@ def execute(resolution: dict, prompt_file: Path, workspace: Path, *, primary: st
     """
     candidate = resolution.get("resolved") or {}
     route = candidate.get("execution_route") or candidate.get("legacy_route")
-    checked = binding_preflight(candidate, route, candidate.get("harness"))
+    resolved_model = candidate.get("provider_model_id")
+    resolved_reasoning = resolution.get("resolved_reasoning")
+    checked = binding_preflight(
+        candidate, route, candidate.get("harness"),
+        model=resolved_model, reasoning=resolved_reasoning,
+    )
     if not checked["ok"]:
         return {"state": "harness-unavailable", "reason": checked["reason"]}
     task = prompt_file.read_text(encoding="utf-8")
@@ -30,7 +35,10 @@ def execute(resolution: dict, prompt_file: Path, workspace: Path, *, primary: st
         outcome = run_vllm_consultation(route_name, workspace, task, timeout_seconds=timeout)
         code, evidence = outcome.exit_code, outcome.record_dir
     else:
-        code, evidence = run_consultation(route, workspace, task, timeout_seconds=timeout, primary=primary, caller="ekalavya")
+        code, evidence = run_consultation(
+            route, workspace, task, timeout_seconds=timeout, primary=primary,
+            caller="ekalavya", model=resolved_model, effort=resolved_reasoning,
+        )
     result: dict[str, object] = {"state": "completed" if code == 0 else "failed", "exit_code": code, "evidence": str(evidence), "retries": 0}
     metadata = evidence / "execution.json"
     if metadata.is_file():
