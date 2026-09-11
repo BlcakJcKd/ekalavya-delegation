@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+import re
 
 from . import routing
 from ekalavya.deepseek import assert_deepseek_pro_exact
@@ -250,17 +251,40 @@ def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def _claude_usage_projection(stdout: str) -> tuple[dict[str, int] | None, str | None]:
-    """Read Claude's single structured final-result ``usage`` object only.
+_SAFE_CLAUDE_MODEL_ID = re.compile(r"^[A-Za-z0-9._:/-]{1,256}$")
+_CLAUDE_MODEL_USAGE_FIELDS = {
+    "inputTokens": "input_tokens",
+    "outputTokens": "output_tokens",
+    "cacheReadInputTokens": "cache_read_tokens",
+    "cacheCreationInputTokens": "cache_write_tokens",
+}
 
-    This deliberately rejects JSONL, generic embedded JSON, duplicate keys,
-    and any record other than Claude's retained top-level ``type=result``
-    shape.  It never returns content, tools, modelUsage, or cost estimates.
+def _claude_fresh_one_shot(argv: list[str]) -> bool:
+    """Whether this exact Claude argv is a non-resumed, ephemeral query."""
+    return (
+        argv[:1] == ["claude"]
+        and "-p" in argv
+        and "--no-session-persistence" in argv
+        and "--resume" not in argv
+        and "--session-id" not in argv
+    )
+
+
+def _claude_usage_projection(
+    stdout: str, *, fresh_one_shot: bool = False,
+) -> tuple[dict[str, int] | None, list[dict[str, object]] | None, str | None]:
+    """Safely project one Claude final-result usage shape.
+
+    A structured top-level ``usage`` takes precedence.  ``modelUsage`` is a
+    documented per-model fallback only for an argv proven to be a fresh,
+    non-resumed one-shot query.  The returned model rows contain only a model
+    identifier and allowlisted integer token fields; no raw result object is
+    retained in execution metadata.
     """
     try:
         record = json.loads(stdout, object_pairs_hook=_unique_json_object)
     except (_AmbiguousClaudeRecord, json.JSONDecodeError):
-        return None, "Claude structured usage was absent or ambiguous; telemetry was not inferred"
+        return None, None, "Claude structured usage was absent or ambiguous; telemetry was not inferred"
     if not isinstance(record, dict) or (
         record.get("type") != "result"
         or record.get("subtype") != "success"
@@ -268,25 +292,50 @@ def _claude_usage_projection(stdout: str) -> tuple[dict[str, int] | None, str | 
         or not isinstance(record.get("stop_reason"), str)
         or not isinstance(record.get("terminal_reason"), str)
     ):
-        return None, None
+        return None, None, None
     usage = record.get("usage")
-    if not isinstance(usage, dict):
-        return None, "Claude result did not include a structured usage object"
 
     def token(field: str) -> int | None:
         value = usage.get(field)
         return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
-    details = usage.get("output_tokens_details")
-    thinking = details.get("thinking_tokens") if isinstance(details, dict) else None
-    projection = {
-        "input_tokens": token("input_tokens"),
-        "output_tokens": token("output_tokens"),
-        "cache_read_tokens": token("cache_read_input_tokens"),
-        "cache_write_tokens": token("cache_creation_input_tokens"),
-        "reasoning_tokens": thinking if isinstance(thinking, int) and not isinstance(thinking, bool) and thinking >= 0 else None,
-    }
-    return ({key: value for key, value in projection.items() if value is not None} or None), None
+    if isinstance(usage, dict):
+        details = usage.get("output_tokens_details")
+        thinking = details.get("thinking_tokens") if isinstance(details, dict) else None
+        projection = {
+            "input_tokens": token("input_tokens"),
+            "output_tokens": token("output_tokens"),
+            "cache_read_tokens": token("cache_read_input_tokens"),
+            "cache_write_tokens": token("cache_creation_input_tokens"),
+            "reasoning_tokens": thinking if isinstance(thinking, int) and not isinstance(thinking, bool) and thinking >= 0 else None,
+        }
+        safe = {key: value for key, value in projection.items() if value is not None}
+        if safe:
+            return safe, None, None
+        return None, None, "Claude structured usage had no valid token fields; telemetry was not inferred"
+    if usage is not None:
+        return None, None, "Claude structured usage was malformed; telemetry was not inferred"
+    if not fresh_one_shot:
+        return None, None, "Claude modelUsage was not used because session freshness was not proven"
+
+    model_usage = record.get("modelUsage")
+    if not isinstance(model_usage, dict) or not model_usage:
+        return None, None, "Claude result did not include usable structured usage"
+    rows: list[dict[str, object]] = []
+    for model, values in sorted(model_usage.items()):
+        if not isinstance(model, str) or not _SAFE_CLAUDE_MODEL_ID.fullmatch(model) or not isinstance(values, dict):
+            return None, None, "Claude modelUsage was malformed or ambiguous; telemetry was not inferred"
+        projection: dict[str, object] = {"model": model}
+        for source, destination in _CLAUDE_MODEL_USAGE_FIELDS.items():
+            value = values.get(source)
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                projection[destination] = value
+            elif value is not None:
+                return None, None, "Claude modelUsage was malformed or ambiguous; telemetry was not inferred"
+        if len(projection) == 1:
+            return None, None, "Claude modelUsage had no valid token fields; telemetry was not inferred"
+        rows.append(projection)
+    return None, rows, None
 
 
 def _validated_log_root(log_root: Path, workspace: Path) -> Path:
@@ -371,9 +420,12 @@ def run_consultation(
     wall_seconds = time.monotonic() - begun
 
     usage_projection: dict[str, int] | None = None
+    model_usage_projections: list[dict[str, object]] | None = None
     usage_warning: str | None = None
     if spec.name in {"haiku", "sonnet"}:
-        usage_projection, usage_warning = _claude_usage_projection(stdout)
+        usage_projection, model_usage_projections, usage_warning = _claude_usage_projection(
+            stdout, fresh_one_shot=_claude_fresh_one_shot(argv),
+        )
 
     provider_success = exit_code == 0
     inference_occurred = provider_success and bool(stdout.strip())
@@ -463,6 +515,12 @@ def run_consultation(
     if usage_projection is not None:
         # Claude Code is the reporting harness; this is not billing truth.
         record["provider_reported_usage"] = usage_projection
+        record["usage_provenance"] = "harness_reported"
+    elif model_usage_projections is not None:
+        # Per-model rows are safe only because this argv is a new one-shot
+        # query.  Do not treat their map keys as an authoritative effective
+        # model for the enclosing run.
+        record["provider_reported_usage_by_model"] = model_usage_projections
         record["usage_provenance"] = "harness_reported"
     if usage_warning is not None:
         record["telemetry_parse_warning"] = usage_warning

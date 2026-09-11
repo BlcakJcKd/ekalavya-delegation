@@ -140,7 +140,7 @@ class CaseBTimeoutTests(unittest.TestCase):
 
             # The killed child must not remain running (real termination, not orphaned).
             leftover = subprocess.run(
-                ["pgrep", "-f", "sleep 60"], text=True, capture_output=True,
+                ["pgrep", "-f", r"(^|/)sleep 60$"], text=True, capture_output=True,
             )
             self.assertEqual(leftover.returncode, 1, "no leftover 'sleep 60' process after timeout kill")
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,9 @@ SAFE_ANALYTICS_KEYS = {
     "cache_read_tokens_provenance", "cache_write_tokens_provenance", "total_tokens_provenance",
 }
 
+_SAFE_MODEL_ID = re.compile(r"^[A-Za-z0-9._:/-]{1,256}$")
+_MODEL_USAGE_KEYS = {"model", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"}
+
 
 def _int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
@@ -33,11 +37,7 @@ def _float(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
-def safe_usage_from_execution(raw: dict[str, Any]) -> dict[str, Any]:
-    """Project only provider/harness usage fields from an execution record."""
-    usage = raw.get("provider_reported_usage")
-    if not isinstance(usage, dict):
-        usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+def _safe_usage(usage: dict[str, Any], *, provenance: str, provider_reported_model_id: str | None = None) -> dict[str, Any]:
     input_tokens = _int(usage.get("input_tokens", usage.get("prompt_tokens")))
     output_tokens = _int(usage.get("output_tokens", usage.get("completion_tokens")))
     reasoning_tokens = _int(usage.get("reasoning_tokens"))
@@ -46,7 +46,6 @@ def safe_usage_from_execution(raw: dict[str, Any]) -> dict[str, Any]:
     total = _int(usage.get("total_tokens"))
     if total is None and input_tokens is not None and output_tokens is not None:
         total = input_tokens + output_tokens
-    provenance = raw.get("usage_provenance") if raw.get("usage_provenance") in {"provider_reported", "harness_reported"} else "provider_reported"
     return {
         "input_tokens": input_tokens, "output_tokens": output_tokens,
         "reasoning_tokens": reasoning_tokens, "cache_read_tokens": cache_read,
@@ -61,8 +60,58 @@ def safe_usage_from_execution(raw: dict[str, Any]) -> dict[str, Any]:
         "uncached_input_tokens_provenance": "derived" if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else "unavailable",
         "total_tokens_provenance": provenance if usage.get("total_tokens") is not None else ("derived" if total is not None else "unavailable"),
         "token_telemetry_status": "complete" if total is not None else ("partial" if any(x is not None for x in (input_tokens, output_tokens, reasoning_tokens, cache_read, cache_write)) else "unavailable"),
-        "provider_reported_model_id": raw.get("provider_reported_model_id") if isinstance(raw.get("provider_reported_model_id"), str) and len(raw["provider_reported_model_id"]) <= 256 else None,
+        "provider_reported_model_id": provider_reported_model_id,
     }
+
+
+def _safe_model_usage_rows(raw: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Validate the already-projected Claude per-model usage contract.
+
+    The raw Claude ``modelUsage`` object is never accepted here.  This is a
+    defensive boundary for the safe, flat projection persisted by the wrapper.
+    """
+    value = raw.get("provider_reported_usage_by_model")
+    if not isinstance(value, list) or not value:
+        return None
+    rows: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) - _MODEL_USAGE_KEYS:
+            return None
+        model = item.get("model")
+        if not isinstance(model, str) or not _SAFE_MODEL_ID.fullmatch(model):
+            return None
+        row = {"model": model}
+        for key in _MODEL_USAGE_KEYS - {"model"}:
+            token = _int(item.get(key))
+            if item.get(key) is not None and token is None:
+                return None
+            if token is not None:
+                row[key] = token
+        if len(row) == 1:
+            return None
+        rows.append(row)
+    return rows
+
+
+def safe_usage_from_execution(raw: dict[str, Any]) -> dict[str, Any]:
+    """Project only provider/harness usage fields from an execution record."""
+    provenance = raw.get("usage_provenance") if raw.get("usage_provenance") in {"provider_reported", "harness_reported"} else "provider_reported"
+    provider_model = raw.get("provider_reported_model_id") if isinstance(raw.get("provider_reported_model_id"), str) and len(raw["provider_reported_model_id"]) <= 256 else None
+    usage = raw.get("provider_reported_usage")
+    if isinstance(usage, dict):
+        return _safe_usage(usage, provenance=provenance, provider_reported_model_id=provider_model)
+    if isinstance(raw.get("usage"), dict):
+        return _safe_usage(raw["usage"], provenance=provenance, provider_reported_model_id=provider_model)
+    rows = _safe_model_usage_rows(raw)
+    if rows is None:
+        return _safe_usage({}, provenance=provenance, provider_reported_model_id=provider_model)
+    aggregate = {
+        key: sum(int(row.get(key, 0)) for row in rows)
+        for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+    }
+    # Map keys are per-request metric identities, not authoritative effective
+    # model reports for the enclosing run.
+    return _safe_usage(aggregate, provenance=provenance, provider_reported_model_id=None)
 
 
 def persist_execution_observability(conn: Any, run_id: str, *, run_data: dict[str, Any], execution: dict[str, Any] | None = None) -> None:
@@ -87,10 +136,19 @@ def persist_execution_observability(conn: Any, run_id: str, *, run_data: dict[st
     }
     record_run_observability(conn, run_id, data)
     if execution:
-        metric = {key: usage[key] for key in ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens", "input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cache_read_tokens_provenance", "cache_write_tokens_provenance", "total_tokens_provenance")}
-        metric.update({"ordinal": 1, "model": usage.get("provider_reported_model_id"), "provider": run_data.get("primary_provider")})
-        if any(metric.get(key) is not None for key in ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens")):
-            record_safe_request_metric(conn, run_id, metric)
+        model_rows = _safe_model_usage_rows(raw)
+        has_single_usage = isinstance(raw.get("provider_reported_usage"), dict) or isinstance(raw.get("usage"), dict)
+        provenance = raw.get("usage_provenance") if raw.get("usage_provenance") in {"provider_reported", "harness_reported"} else "provider_reported"
+        metric_rows: list[tuple[dict[str, Any], dict[str, Any]]]
+        if model_rows is not None and not has_single_usage:
+            metric_rows = [(row, _safe_usage(row, provenance=provenance)) for row in model_rows]
+        else:
+            metric_rows = [({"model": usage.get("provider_reported_model_id")}, usage)]
+        for ordinal, (row, row_usage) in enumerate(metric_rows, start=1):
+            metric = {key: row_usage[key] for key in ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens", "input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cache_read_tokens_provenance", "cache_write_tokens_provenance", "total_tokens_provenance")}
+            metric.update({"ordinal": ordinal, "model": row.get("model"), "provider": run_data.get("primary_provider")})
+            if any(metric.get(key) is not None for key in ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens")):
+                record_safe_request_metric(conn, run_id, metric)
 
 
 def assert_safe_analytics_payload(payload: dict[str, Any]) -> None:

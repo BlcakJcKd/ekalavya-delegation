@@ -72,6 +72,43 @@ class UsageObservabilityTests(unittest.TestCase):
         self.assertNotIn("sanitized response content", exported)
         self.assertNotIn("modelUsage", exported)
 
+    def test_safe_model_usage_rows_preserve_per_model_metrics_without_fake_effective_model(self):
+        record_run(self.conn, "claude-model-usage", {"profile": "haiku"}, provider="claude", identity_key="requested")
+        persist_execution_observability(
+            self.conn, "claude-model-usage",
+            run_data={"task": "review", "requested_profile": "haiku", "primary_provider": "claude"},
+            execution={
+                "state": "completed",
+                "provider_reported_usage_by_model": [
+                    {"model": "claude-haiku-4-5-20251001", "input_tokens": 120, "output_tokens": 34, "cache_read_tokens": 18, "cache_write_tokens": 6},
+                    {"model": "claude-sonnet-5", "input_tokens": 12, "output_tokens": 8},
+                ],
+                "usage_provenance": "harness_reported",
+            },
+        )
+        run = self.conn.execute("SELECT input_tokens,output_tokens,cache_read_tokens,total_tokens,provider_reported_model_id FROM run_observability").fetchone()
+        self.assertEqual(tuple(run), (132, 42, 18, 174, None))
+        metrics = self.conn.execute("SELECT ordinal,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,metadata_json FROM request_metrics ORDER BY ordinal").fetchall()
+        self.assertEqual([tuple(row) for row in metrics], [
+            (1, "claude-haiku-4-5-20251001", 120, 34, 18, 6, None, "{}"),
+            (2, "claude-sonnet-5", 12, 8, None, None, None, "{}"),
+        ])
+
+    def test_invalid_model_usage_projection_is_not_persisted(self):
+        record_run(self.conn, "invalid-model-usage", {"profile": "haiku"}, provider="claude", identity_key="requested")
+        persist_execution_observability(
+            self.conn, "invalid-model-usage",
+            run_data={"task": "review", "requested_profile": "haiku", "primary_provider": "claude"},
+            execution={
+                "state": "completed",
+                "provider_reported_usage_by_model": [{"model": "claude-haiku-4-5-20251001", "input_tokens": 1, "raw_payload": "private"}],
+                "usage_provenance": "harness_reported",
+            },
+        )
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM request_metrics").fetchone()[0], 0)
+        row = self.conn.execute("SELECT input_tokens,provider_reported_model_id FROM run_observability").fetchone()
+        self.assertEqual(tuple(row), (None, None))
+
     def test_exported_safety_gate_rejects_nested_and_identity_secrets(self):
         assert_safe_analytics_payload({"input_tokens": 1, "cache_read_tokens": 0})
         for payload in ({"chain_of_thought": "private"}, {"api_key": "secret"}, {"safe": {"prompt": "private"}}, {"raw_payload": []}):

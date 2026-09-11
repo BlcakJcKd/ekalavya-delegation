@@ -36,7 +36,7 @@ def execute(resolution: dict, prompt_file: Path, workspace: Path, *, primary: st
     if metadata.is_file():
         import json
         captured = json.loads(metadata.read_text(encoding="utf-8"))
-        for key in ("response_status", "response_recorded", "response_file", "request_count", "wall_seconds", "timed_out", "provider", "requested_model", "provider_reported_model_id", "provider_reported_usage", "usage_provenance", "telemetry_parse_warning", "requested_effort", "transport", "error_category"):
+        for key in ("response_status", "response_recorded", "response_file", "request_count", "wall_seconds", "timed_out", "provider", "requested_model", "provider_reported_model_id", "provider_reported_usage", "provider_reported_usage_by_model", "usage_provenance", "telemetry_parse_warning", "requested_effort", "transport", "error_category"):
             if key in captured:
                 result[key] = captured[key]
     return result

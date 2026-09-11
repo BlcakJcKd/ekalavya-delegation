@@ -1,0 +1,22 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "stop_reason": "end_turn",
+  "terminal_reason": "completed",
+  "usage": null,
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 120,
+      "outputTokens": 34,
+      "cacheReadInputTokens": 18,
+      "cacheCreationInputTokens": 6,
+      "costUSD": 0.12,
+      "contextWindow": 200000,
+      "maxOutputTokens": 8192,
+      "webSearchRequests": 3,
+      "privatePrompt": "private prompt",
+      "privateResult": "private result"
+    }
+  }
+}

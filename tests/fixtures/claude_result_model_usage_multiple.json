@@ -1,0 +1,12 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "stop_reason": "end_turn",
+  "terminal_reason": "completed",
+  "usage": null,
+  "modelUsage": {
+    "claude-sonnet-5": {"inputTokens": 12, "outputTokens": 8},
+    "claude-haiku-4-5-20251001": {"inputTokens": 120, "outputTokens": 34, "cacheReadInputTokens": 18, "cacheCreationInputTokens": 6}
+  }
+}

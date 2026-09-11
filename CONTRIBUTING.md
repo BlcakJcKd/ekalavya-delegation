@@ -23,3 +23,22 @@ Do not add provider credentials, private experiment state, generated caches,
 or model calls to a pull request. Keep public package entry points limited to
 `eka` and `ekalavya`; legacy `ask-*`, `ask-vllm`, and `delegate-*` commands
 are not part of the public interface.
+
+## Worktree-local live validation
+
+When a provider smoke test must exercise an uninstalled worktree, use a
+disposable virtual environment rather than changing the user's installed
+Ekalavya or `PATH`. The venv may reuse the normal user configuration, state,
+and authenticated provider harnesses, but its `eka` entry point must be the
+one invoked:
+
+```bash
+venv_dir="$(mktemp -d /tmp/ekalavya-validation.XXXXXX)"
+python -m venv "$venv_dir"
+"$venv_dir/bin/pip" install --no-deps -e .
+"$venv_dir/bin/python" -c 'import ekalavya; print(ekalavya.__file__)'
+"$venv_dir/bin/eka" status
+```
+
+Remove the disposable directory when validation is complete. Never alter the
+canonical installation merely to test a worktree.
