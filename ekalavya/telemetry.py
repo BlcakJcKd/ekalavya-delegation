@@ -60,7 +60,7 @@ def safe_usage_from_execution(raw: dict[str, Any]) -> dict[str, Any]:
         "cache_write_tokens_provenance": provenance if cache_write is not None else "unavailable",
         "uncached_input_tokens_provenance": "derived" if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else "unavailable",
         "total_tokens_provenance": provenance if usage.get("total_tokens") is not None else ("derived" if total is not None else "unavailable"),
-        "token_telemetry_status": "complete" if total is not None else ("partial" if any(x is not None for x in (input_tokens, output_tokens, reasoning_tokens, cache_read)) else "unavailable"),
+        "token_telemetry_status": "complete" if total is not None else ("partial" if any(x is not None for x in (input_tokens, output_tokens, reasoning_tokens, cache_read, cache_write)) else "unavailable"),
         "provider_reported_model_id": raw.get("provider_reported_model_id") if isinstance(raw.get("provider_reported_model_id"), str) and len(raw["provider_reported_model_id"]) <= 256 else None,
     }
 
