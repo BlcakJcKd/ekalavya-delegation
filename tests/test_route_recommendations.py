@@ -1,0 +1,89 @@
+import tempfile
+import unittest
+import io
+import os
+from pathlib import Path
+from unittest.mock import patch
+from contextlib import redirect_stdout
+
+from delegation.config import default_config, parse_config, set_routing_preference
+from ekalavya.recommendation import _winner_by_feedback, recommend
+from ekalavya.schema import CandidateIdentity, Resolution, RunIntent
+from ekalavya.cli import main
+
+
+def resolved(profile: str, provider: str) -> Resolution:
+    identity = CandidateIdentity(provider, profile, f"{provider}-{profile}", profile)
+    return Resolution(RunIntent(profile), identity, resolved_harness="test", execution_route=profile)
+
+
+class RouteRecommendationTests(unittest.TestCase):
+    def setUp(self):
+        self.config = default_config()
+        self.profiles = [
+            {"name": "sonnet", "default_identity_key": "sonnet", "permitted_candidates": ["sonnet"]},
+            {"name": "flash", "default_identity_key": "flash", "permitted_candidates": ["flash"]},
+        ]
+        self.catalogue = []
+
+    def _ready(self, *args, **kwargs):
+        return {"harness_ready": "ready", "readiness_reason": None}
+
+    def test_explicit_cross_provider_preference_beats_primary_native(self):
+        self.config = set_routing_preference(self.config, "review", "preferred_targets", ["sonnet", "primary-native"])
+        def fake_resolve(intent, *args, **kwargs):
+            return resolved(intent.profile, "claude" if intent.profile == "sonnet" else "gemini")
+        with patch("ekalavya.recommendation.resolve", side_effect=fake_resolve), patch("ekalavya.recommendation.profile_readiness", side_effect=self._ready):
+            result = recommend(task="review", primary="codex", config=self.config, profiles=self.profiles, catalogue=self.catalogue, observed_availability={})
+        self.assertEqual(result["recommendation"]["target"], "profile:sonnet")
+        self.assertEqual(result["decision_basis"], "explicit-preference")
+        self.assertFalse(result["executed"])
+
+    def test_primary_native_is_default_without_task_preference(self):
+        with patch("ekalavya.recommendation.resolve", side_effect=lambda intent, *args, **kwargs: resolved(intent.profile, "claude")), patch("ekalavya.recommendation.profile_readiness", side_effect=self._ready):
+            result = recommend(task="review", primary="codex", config=self.config, profiles=self.profiles, catalogue=self.catalogue, observed_availability={})
+        self.assertEqual(result["recommendation"]["target"], "primary-native")
+        self.assertEqual(result["decision_basis"], "default-primary-native")
+
+    def test_omitted_primary_never_creates_native_target(self):
+        with patch("ekalavya.recommendation.resolve", side_effect=lambda intent, *args, **kwargs: resolved(intent.profile, "claude")), patch("ekalavya.recommendation.profile_readiness", side_effect=self._ready):
+            result = recommend(task="review", primary=None, config=self.config, profiles=self.profiles, catalogue=self.catalogue, observed_availability={})
+        self.assertIsNone(result["recommendation"])
+        self.assertEqual(result["decision_basis"], "tie")
+        self.assertTrue(any("primary-unknown" in warning for warning in result["warnings"]))
+
+    def test_hard_exclusion_can_exclude_primary_native(self):
+        self.config = set_routing_preference(self.config, "review", "excluded_targets", ["primary-native"])
+        with patch("ekalavya.recommendation.resolve", side_effect=lambda intent, *args, **kwargs: resolved(intent.profile, "claude")), patch("ekalavya.recommendation.profile_readiness", side_effect=self._ready):
+            result = recommend(task="review", primary="codex", config=self.config, profiles=self.profiles, catalogue=self.catalogue, observed_availability={})
+        self.assertNotEqual((result["recommendation"] or {}).get("target"), "primary-native")
+        self.assertIn({"target": "primary-native", "code": "user-excluded"}, result["excluded"])
+
+    def test_each_profile_uses_the_canonical_resolver_once(self):
+        with patch("ekalavya.recommendation.resolve", side_effect=lambda intent, *args, **kwargs: resolved(intent.profile, "claude")) as resolver, patch("ekalavya.recommendation.profile_readiness", side_effect=self._ready):
+            recommend(task="review", primary=None, config=self.config, profiles=self.profiles, catalogue=self.catalogue, observed_availability={})
+        self.assertEqual(resolver.call_count, len(self.profiles))
+
+    def test_feedback_requires_five_ratings_for_every_compared_target(self):
+        low = {"target": "profile:a", "history": {"rated": 4, "feedback": {"useful": 4}, "terminal": 0, "successful": 0, "success_rate": None, "wall_coverage": 0, "median_wall_seconds": None}}
+        high = {"target": "profile:b", "history": {"rated": 5, "feedback": {"useful": 5}, "terminal": 0, "successful": 0, "success_rate": None, "wall_coverage": 0, "median_wall_seconds": None}}
+        self.assertIsNone(_winner_by_feedback([low, high]))
+
+    def test_routing_config_normalizes_bare_targets_and_rejects_conflicts(self):
+        config = set_routing_preference(default_config(), "scientific-critique", "preferred_targets", ["sonnet", "primary-native"])
+        self.assertEqual(config["routing"]["preferences"]["scientific-critique"]["preferred_targets"], ["profile:sonnet", "primary-native"])
+        with self.assertRaises(ValueError):
+            parse_config({"routing": {"preferences": {"review": {"allowed_targets": ["profile:sonnet"], "excluded_targets": ["sonnet"]}}}})
+
+    def test_route_cli_never_calls_execution_or_creates_config(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(root / "config"), "XDG_STATE_HOME": str(root / "state")}, clear=False), patch("ekalavya.cli.execute", side_effect=AssertionError("must not execute")) as execute:
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(main(["route", "--task", "review", "--json"]), 0)
+            execute.assert_not_called()
+            self.assertFalse((root / "config" / "ekalavya" / "config.toml").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

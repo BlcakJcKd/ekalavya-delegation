@@ -22,7 +22,7 @@ import shutil
 from typing import Any
 
 from . import routing
-from .config import load_config, save_config
+from .config import load_config, save_config, set_routing_preference
 from .vllm import VLLMRouteInfo, inspect_vllm_routes
 
 PROVIDER_ORDER: tuple[str, ...] = ("gemini", "claude", "codex", "deepseek", "minimax")
@@ -228,6 +228,59 @@ def _prompt_reason(stdscr) -> str | None:
     return raw.strip() or None
 
 
+def _prompt_text(stdscr, prompt: str) -> str | None:
+    import curses
+    height, width = stdscr.getmaxyx(); y = max(0, height - 2)
+    curses.echo()
+    try:
+        stdscr.addstr(y, 0, prompt[: max(1, width - 1)]); stdscr.clrtoeol(); stdscr.refresh()
+        raw = stdscr.getstr(y, min(len(prompt), max(0, width - 2))).decode("utf-8", errors="replace").strip()
+    except Exception:
+        raw = ""
+    finally:
+        curses.noecho()
+    return raw or None
+
+
+def _routing_setup_loop(stdscr, config: dict[str, Any]) -> dict[str, Any] | None:
+    """Small staged setup editor for ordered task preferences only."""
+    import curses
+    updated = config
+    while True:
+        stdscr.erase(); height, width = stdscr.getmaxyx()
+        stdscr.addstr(0, 0, "Ekalavya Setup — Route preferences", curses.A_BOLD)
+        stdscr.addstr(2, 0, "a add/update task   d delete task   s save   q cancel")
+        preferences = updated.get("routing", {}).get("preferences", {})
+        y = 4
+        if not preferences:
+            stdscr.addstr(y, 0, "No task preferences configured (native/default policy remains unchanged).")
+        for task in sorted(preferences):
+            targets = preferences[task].get("preferred_targets", [])
+            stdscr.addstr(y, 0, f"{task}: " + " > ".join(targets)[: max(1, width - len(task) - 3)])
+            y += 1
+            if y >= height - 3: break
+        stdscr.refresh(); key = stdscr.getch()
+        if key in (curses.KEY_ENTER, 10, 13, ord("s")):
+            return updated
+        if key == ord("q"):
+            return None
+        if key == ord("a"):
+            task = _prompt_text(stdscr, "Task slug: ")
+            targets = _prompt_text(stdscr, "Ordered targets (comma-separated; e.g. sonnet,primary-native): ")
+            if task and targets:
+                try:
+                    updated = set_routing_preference(updated, task, "preferred_targets", [item.strip() for item in targets.split(",") if item.strip()])
+                except ValueError as exc:
+                    _prompt_text(stdscr, f"Invalid preference ({exc}); Enter: ")
+        if key == ord("d"):
+            task = _prompt_text(stdscr, "Task slug to delete: ")
+            if task:
+                try:
+                    updated = set_routing_preference(updated, task, "preferred_targets", [])
+                except ValueError as exc:
+                    _prompt_text(stdscr, f"Invalid task ({exc}); Enter: ")
+
+
 def _loop(stdscr, rows: list[Row], *, title: str = "Ekalavya Availability") -> list[Row] | None:
     import curses
 
@@ -332,8 +385,18 @@ def run_interactive_setup() -> dict[str, object]:
     result = curses.wrapper(lambda stdscr: _loop(stdscr, rows, title="Ekalavya Setup"))
     if result is None:
         return {"cancelled": True, "changed": False, "readiness": setup_readiness(config, detection)}
-    updated = rows_to_config(config, result)
+    availability_updated = rows_to_config(config, result)
+    routing_updated = curses.wrapper(lambda stdscr: _routing_setup_loop(stdscr, availability_updated))
+    if routing_updated is None:
+        return {"cancelled": True, "changed": False, "readiness": setup_readiness(config, detection)}
+    # Compatibility for thin test/fake wrappers that return the availability
+    # rows for every wrapper call rather than driving the second editor.
+    if not isinstance(routing_updated, dict):
+        routing_updated = availability_updated
+    updated = routing_updated
     changes = diff_summary(config, result)
+    if updated.get("routing") != config.get("routing"):
+        changes.append("routing preferences updated")
     if changes:
         save_config(updated)
     return {

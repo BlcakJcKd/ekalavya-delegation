@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from delegation import routing
-from delegation.config import load_config, save_config, set_enabled
+from delegation.config import load_config, save_config, set_enabled, set_routing_preference, set_routing_reserve
 from delegation.status_cli import _print_human, build_report
 from delegation.vllm import inspect_vllm_routes
 from delegation.paths import state_dir
@@ -34,6 +34,8 @@ from .schema import CandidateIdentity, RunIntent
 from .telemetry import persist_execution_observability
 from .quota import collect_snapshots, public_snapshot
 from .usage import build_insights, build_usage, clear_observability, delete_feedback, export_usage, refresh_quotas, set_feedback
+from .targets import named_route_profile
+from .recommendation import recommend
 
 
 def _paths() -> tuple[Path, Path, Path]:
@@ -104,39 +106,6 @@ def _validated_source_candidates(incoming: object) -> list[dict[str, Any]]:
         item["identity_key"] = identity.identity_key
         result.append(item)
     return result
-
-
-def _named_route_profile(name: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    """Expose a configured named vLLM route through the generic run contract."""
-    if not name.startswith("vllm:") or not name[5:]:
-        return None
-    route = name[5:]
-    info = inspect_vllm_routes().get(route)
-    config = load_config()
-    if info is None or info.provider is None:
-        return None
-    provider = info.provider
-    identity = CandidateIdentity(
-        "vllm", "openai-compatible", provider.model, route,
-        capabilities={"harness_values": ["vllm"]},
-    )
-    entry = identity.as_dict()
-    entry.update({
-        "identity_key": identity.identity_key,
-        "lifecycle": "current",
-        "execution_route": f"vllm:{route}",
-        "transport": "openai-compatible",
-        "harness": "vllm",
-        "harness_version": None,
-    })
-    profile = {
-        "name": name,
-        "description": f"Configured named vLLM route {route}",
-        "default_identity_key": identity.identity_key,
-        "permitted_candidates": [identity.identity_key],
-        "reasoning_policy": "overrideable",
-    }
-    return profile, entry
 
 
 def _json_or_text(value: Any, as_json: bool) -> None:
@@ -330,6 +299,44 @@ def cmd_config(args: argparse.Namespace) -> int:
             from delegation.config_tui import run_interactive_config
             return run_interactive_config()
         root, _, _ = _paths(); _json_or_text({"config_root": str(root), "migration": "explicit via eka config migrate", **_availability_payload(config)}, args.json); return 0
+    if action == "routing":
+        routing_action = getattr(args, "target", None) or "list"
+        values = list(getattr(args, "values", []) or [])
+        try:
+            if routing_action == "list":
+                if values:
+                    raise ValueError("config routing list accepts no values")
+                _json_or_text({"routing": config.get("routing", {"preferences": {}, "reserves": {}})}, args.json)
+                return 0
+            if routing_action in {"set-preference", "set-allowed", "set-excluded"}:
+                if not values:
+                    raise ValueError(f"config routing {routing_action} requires TASK followed by one or more targets")
+                field = {"set-preference": "preferred_targets", "set-allowed": "allowed_targets", "set-excluded": "excluded_targets"}[routing_action]
+                updated = set_routing_preference(config, values[0], field, values[1:])
+            elif routing_action in {"clear-preference", "clear-allowed", "clear-excluded"}:
+                if len(values) != 1:
+                    raise ValueError(f"config routing {routing_action} requires exactly TASK")
+                field = {"clear-preference": "preferred_targets", "clear-allowed": "allowed_targets", "clear-excluded": "excluded_targets"}[routing_action]
+                updated = set_routing_preference(config, values[0], field, [])
+            elif routing_action == "set-reserve":
+                if len(values) != 1:
+                    raise ValueError("config routing set-reserve requires NAME")
+                required = (args.provider, args.scope_kind, args.resource_kind, args.window_kind, args.minimum_remaining)
+                if any(value is None for value in required):
+                    raise ValueError("set-reserve requires --provider, --scope-kind, --resource-kind, --window-kind, and --minimum-remaining")
+                updated = set_routing_reserve(config, values[0], {"provider": args.provider, "scope_kind": args.scope_kind, "resource_kind": args.resource_kind, "window_kind": args.window_kind, "minimum_remaining_fraction": args.minimum_remaining})
+            elif routing_action == "delete-reserve":
+                if len(values) != 1:
+                    raise ValueError("config routing delete-reserve requires NAME")
+                updated = set_routing_reserve(config, values[0], None)
+            else:
+                raise ValueError(f"unknown config routing action: {routing_action}")
+        except ValueError as exc:
+            print(f"config routing error: {exc}", file=sys.stderr)
+            return 2
+        save_config(updated)
+        _json_or_text({"action": routing_action, "routing": updated.get("routing", {"preferences": {}, "reserves": {}})}, args.json)
+        return 0
     target = getattr(args, "target", None)
     if not target:
         print(f"config {action} requires a target", file=sys.stderr); return 2
@@ -355,6 +362,76 @@ def cmd_config(args: argparse.Namespace) -> int:
         print(f"unknown config action: {action}", file=sys.stderr); return 2
     save_config(updated)
     _json_or_text({"action": action, "target": target, **_availability_payload(updated)}, args.json)
+    return 0
+
+
+def _read_quota_snapshots_readonly() -> list[dict[str, Any]]:
+    path = default_db_path()
+    if not path.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute("SELECT * FROM quota_snapshots q WHERE q.id IN (SELECT MAX(id) FROM quota_snapshots GROUP BY provider,scope_kind,scope_key,resource_kind,window_kind,window_label)").fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.DatabaseError:
+        return []
+    finally:
+        if "conn" in locals():
+            conn.close()
+
+
+def _print_route_human(payload: dict[str, Any], *, explain: bool) -> None:
+    print("Ekalavya Route Recommendation")
+    print(f"Task: {payload['task']}")
+    print(f"Primary: {payload['primary']['normalized'] or 'unknown'}")
+    recommendation = payload["recommendation"]
+    if recommendation is None:
+        print("Recommended: none")
+        print(f"Basis: {payload['decision_basis']}")
+    else:
+        print(f"Recommended: {recommendation['target']}")
+        print(f"Basis: {payload['decision_basis']}")
+        if recommendation.get("preference_rank"):
+            print(f"Preference rank: #{recommendation['preference_rank']}")
+    if payload["alternatives"]:
+        print("Alternatives:")
+        for item in payload["alternatives"]:
+            print(f"  {item['target']}")
+    if payload["excluded"]:
+        print("Excluded:")
+        for item in payload["excluded"]:
+            print(f"  {item['target']} — {item['code']}")
+    for warning in payload["warnings"]:
+        print(f"Warning: {warning}")
+    if explain:
+        print("Decision trace:")
+        for item in payload["trace"]:
+            state = "eligible" if item["eligible"] else item["exclusion"]
+            print(f"  {item['target']}: {state}")
+    print("No delegation executed.")
+
+
+def cmd_route(args: argparse.Namespace) -> int:
+    root, catalogue_path, profiles_path = _paths()
+    try:
+        config = load_config()
+        payload = recommend(
+            task=args.task, primary=args.primary, config=config,
+            profiles=_profiles(profiles_path), catalogue=load_catalogue(catalogue_path),
+            observed_availability=_persisted_model_availability(), db_path=default_db_path(),
+            quota_snapshots=_read_quota_snapshots_readonly(),
+        )
+    except ValueError as exc:
+        print(f"route error: {exc}", file=sys.stderr)
+        return 2
+    if not args.explain:
+        payload = dict(payload)
+        payload.pop("trace", None)
+    if args.json:
+        _json_or_text(payload, True)
+    else:
+        _print_route_human(payload if args.explain else {**payload, "trace": []}, explain=args.explain)
     return 0
 
 
@@ -433,7 +510,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     root, cat, prof = _paths(); profiles = {p.get("name"): p for p in _profiles(prof)}
     catalogue = load_catalogue(cat)
-    dynamic = _named_route_profile(args.profile)
+    dynamic = named_route_profile(args.profile)
     if dynamic:
         profiles[args.profile], named_entry = dynamic
         catalogue = catalogue + [named_entry]
@@ -594,7 +671,7 @@ def _parser() -> argparse.ArgumentParser:
     q=sub.add_parser("status", help="network-free catalogue/profile overview"); q.add_argument("--primary"); q.add_argument("--live", action="store_true", help="perform explicit GET-only shared-route observability checks"); common(q); q.set_defaults(func=cmd_status)
     q=sub.add_parser("profiles", help="list stable capability profiles, not raw model IDs"); common(q); q.set_defaults(func=cmd_profiles)
     q=sub.add_parser("models", help="list catalogue identities; promotion is explicit"); q.add_argument("action", nargs="?", choices=["refresh", "promote"], default=None); q.add_argument("target", nargs="?"); q.add_argument("--source", type=Path); q.add_argument("--provider", choices=["gemini"]); q.add_argument("--basis", choices=sorted(PROMOTION_BASES - {"unspecified"}), default="unspecified"); q.add_argument("--promotion-reason"); q.add_argument("--set-default", action="store_true"); q.add_argument("--profile"); q.add_argument("--default-reasoning", choices=["low", "medium", "high"]); common(q); q.set_defaults(func=cmd_models)
-    q=sub.add_parser("config", help="inspect or explicitly mutate user-owned availability configuration"); q.add_argument("action", nargs="?", choices=["list", "migrate", "enable", "disable", "enable-provider", "disable-provider", "enable-model", "disable-model"]); q.add_argument("target", nargs="?"); q.add_argument("--reason"); common(q); q.set_defaults(func=cmd_config)
+    q=sub.add_parser("config", help="inspect or explicitly mutate user-owned availability and routing configuration"); q.add_argument("action", nargs="?", choices=["list", "migrate", "enable", "disable", "enable-provider", "disable-provider", "enable-model", "disable-model", "routing"]); q.add_argument("target", nargs="?"); q.add_argument("values", nargs="*"); q.add_argument("--reason"); q.add_argument("--provider"); q.add_argument("--scope-kind"); q.add_argument("--resource-kind"); q.add_argument("--window-kind"); q.add_argument("--minimum-remaining", type=float); common(q); q.set_defaults(func=cmd_config)
     q=sub.add_parser("setup", help="interactive first-run integration and profile selection"); common(q); q.set_defaults(func=cmd_setup)
     q=sub.add_parser("history"); q.add_argument("--profile"); q.add_argument("--provider"); q.add_argument("--model"); q.add_argument("--limit", type=int, default=20); common(q); q.set_defaults(func=cmd_history)
     q=sub.add_parser("spend"); common(q); q.set_defaults(func=cmd_spend)
@@ -605,6 +682,7 @@ def _parser() -> argparse.ArgumentParser:
     b=bench_sub.add_parser("bundle", help="create an allowlisted private experiment review bundle"); b.add_argument("experiment"); b.add_argument("--output", type=Path); common(b); b.set_defaults(func=cmd_bench)
     q.set_defaults(func=cmd_bench, bench_action=None, json=False)
     q=sub.add_parser("run"); q.add_argument("profile"); q.add_argument("--provider"); q.add_argument("--family"); q.add_argument("--model"); q.add_argument("--reasoning"); q.add_argument("--harness"); q.add_argument("--workspace", type=Path); q.add_argument("--prompt-file", type=Path); q.add_argument("--primary"); q.add_argument("--timeout", type=int, default=None); q.add_argument("--task", default="unspecified"); q.add_argument("--json", action="store_true"); q.set_defaults(func=cmd_run)
+    q=sub.add_parser("route", help="read-only deterministic delegate recommendation"); q.add_argument("--task", required=True); q.add_argument("--primary"); q.add_argument("--explain", action="store_true"); common(q); q.set_defaults(func=cmd_route)
     q=sub.add_parser("usage", help="inspect local observed usage and honest quota status"); q.add_argument("action", nargs="?", choices=["inspect", "export", "prune", "delete", "reset"]); q.add_argument("--period", default="7d"); q.add_argument("--by", choices=["task", "profile", "provider", "model"]); q.add_argument("--task"); q.add_argument("--profile"); q.add_argument("--provider"); q.add_argument("--model"); q.add_argument("--refresh-quota", action="store_true"); q.add_argument("--before"); q.add_argument("--yes", action="store_true", help="confirm complete observability reset"); q.add_argument("--format", choices=["json", "csv"], default="json"); q.add_argument("--output", type=Path); common(q); q.set_defaults(func=cmd_usage)
     q=sub.add_parser("insights", help="deterministic local usage insights"); q.add_argument("--period", default="7d"); q.add_argument("--by", choices=["task", "profile", "provider", "model"]); q.add_argument("--task"); q.add_argument("--profile"); q.add_argument("--provider"); q.add_argument("--model"); common(q); q.set_defaults(func=cmd_insights)
     q=sub.add_parser("feedback", help="record or delete current categorical feedback"); q.add_argument("run_id"); q.add_argument("--outcome", choices=["useful", "mixed", "not-useful"]); q.add_argument("--delete", action="store_true"); common(q); q.set_defaults(func=cmd_feedback)

@@ -3,6 +3,21 @@
 The primary agent owns routing and final correctness. Ekalavya is an explicit
 control plane for bounded external work, not an autonomous router.
 
+## Read-only recommendations
+
+`eka route --task TASK [--primary PRIMARY]` recommends a target but never
+executes it. Targets are `primary-native`, an Ekalavya profile, or a named
+vLLM route. An explicit eligible user preference wins over analytical evidence;
+there are no universal task/model defaults or weighted quality scores.
+
+Same-provider-native is an execution constraint, not a universal winner. If a
+Codex primary's selected work is native Codex work, the result is
+`primary-native`, never `eka run terra` or `eka run luna`. A user may prefer a
+cross-provider review target ahead of `primary-native`. With no task preference,
+a declared primary-native target is the conservative default. Without
+`--primary`, Ekalavya does not infer one and warns that native policy was not
+evaluated.
+
 ## Provider rule
 
 Use native facilities for same-provider work:

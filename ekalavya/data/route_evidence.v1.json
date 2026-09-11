@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "evidence_id": "payg-crossover-202608-deepseek-v4-flash",
+      "target": "profile:deepseek-flash",
+      "identity": {"provider": "deepseek", "provider_model_id": "deepseek-v4-flash", "generation": "v4"},
+      "task_tags": ["research_python", "diagnostic_plot", "debug_package"],
+      "study": {"id": "payg-crossover-202608", "version": "1"},
+      "date": "2026-08-16",
+      "harness": {"name": "codex-deepseek", "transport": "codex", "environment": "maintainer-machine"},
+      "outcome": {"correctness_rate": 1.0, "scope_compliance_rate": 1.0, "completed": 3, "attempted": 3, "median_wall_seconds": 18.4},
+      "sample_size": 3,
+      "provenance": {"source": "docs/PAYG_BENCHMARK_2026-08.md", "kind": "frozen-crossover", "checksum": "sha256:5f280dc38af56ed7f1d75307af0c1af6c67209e1879b7c938854e3ac2ebf8516"},
+      "comparison_group_id": "payg-crossover-202608-routine",
+      "comparability": {"correctness_comparable": true, "scope_comparable": true, "operational_time_comparable": true}
+    },
+    {
+      "evidence_id": "payg-crossover-202608-minimax-m3",
+      "target": "profile:minimax-m3",
+      "identity": {"provider": "minimax", "provider_model_id": "MiniMax-M3", "generation": "m3"},
+      "task_tags": ["research_python", "diagnostic_plot", "debug_package"],
+      "study": {"id": "payg-crossover-202608", "version": "1"},
+      "date": "2026-08-16",
+      "harness": {"name": "codex-minimax", "transport": "codex", "environment": "maintainer-machine"},
+      "outcome": {"correctness_rate": 1.0, "scope_compliance_rate": 1.0, "completed": 3, "attempted": 3, "median_wall_seconds": 38.98},
+      "sample_size": 3,
+      "provenance": {"source": "docs/PAYG_BENCHMARK_2026-08.md", "kind": "frozen-crossover", "checksum": "sha256:5f280dc38af56ed7f1d75307af0c1af6c67209e1879b7c938854e3ac2ebf8516"},
+      "comparison_group_id": "payg-crossover-202608-routine",
+      "comparability": {"correctness_comparable": true, "scope_comparable": true, "operational_time_comparable": true}
+    },
+    {
+      "evidence_id": "deepseek-v41-flash-characterization-20260910",
+      "target": "profile:deepseek-flash",
+      "identity": {"provider": "deepseek", "provider_model_id": "deepseek-flash", "generation": "v4.1"},
+      "task_tags": ["research_python", "diagnostic_plot", "debug_package", "scientific_writing"],
+      "study": {"id": "deepseek-v41-flash-characterization-20260910", "version": "1"},
+      "date": "2026-09-10",
+      "harness": {"name": "codex-deepseek", "transport": "codex", "environment": "maintainer-machine"},
+      "outcome": {"correctness_rate": 1.0, "scope_compliance_rate": 1.0, "completed": 4, "attempted": 4, "median_wall_seconds": 13.34},
+      "sample_size": 4,
+      "provenance": {"source": "docs/DEEPSEEK_V41_CHARACTERIZATION_2026-09-10.md", "kind": "frozen-prospective-characterization", "checksum": "sha256:4defd989c8865ef89cc4d52fcd0ead022c0f1cb408f68d45e12d3e90d4ee7f41"},
+      "comparison_group_id": "deepseek-v41-prospective-20260910",
+      "comparability": {"correctness_comparable": true, "scope_comparable": true, "operational_time_comparable": false}
+    }
+  ]
+}

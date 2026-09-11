@@ -23,6 +23,17 @@ eka models
 eka history
 ```
 
+For a read-only target recommendation, supply the task tag and the primary
+explicitly whenever it is known:
+
+```bash
+eka route --task review --primary codex --explain
+```
+
+`eka route` never invokes a provider or delegate.  Its result is advice for
+the primary, not authorization to execute it.  A missing `--primary` is
+reported as unknown; Ekalavya never guesses it from the environment or process.
+
 Use `eka doctor` for a health check and `eka config --json` to inspect
 persistent configuration from an agent or script. For a human in a TTY,
 `eka config` opens the interactive checkbox editor with Save/Cancel. These
@@ -152,3 +163,17 @@ automatically visible. `eka insights` is deterministic local aggregation and
 must not make model-quality claims from tiny samples. `eka feedback RUN_ID
 --outcome useful|mixed|not-useful` records one replaceable local outcome only;
 feedback never changes routing or defaults.
+
+## Route recommendations
+
+Task routing policy is user-owned configuration.  Preferences use ordered
+generic targets: `primary-native`, `profile:sonnet`, or `vllm:<name>`.
+An explicit eligible task preference wins over local/benchmark evidence, so a
+Codex primary may deliberately prefer an independent Claude or DeepSeek review.
+The same-provider rule remains an execution constraint: a same-provider target
+is represented as `primary-native`, never as an `eka run` route.
+
+Without a task preference, a declared native primary is the conservative
+default.  Otherwise `eka route` uses only qualified comparable local feedback,
+frozen evidence, and operational observations; missing evidence is neutral and
+a real tie stays a tie.  It never learns or writes preferences from history.

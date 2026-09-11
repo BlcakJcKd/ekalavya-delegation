@@ -22,5 +22,8 @@ ekalavya = "ekalavya.cli:main"
 [tool.setuptools]
 packages = ["delegation", "ekalavya", "benchmark", "benchmark.v2", "benchmark.public_characterization"]
 
+[tool.setuptools.package-data]
+ekalavya = ["data/*.json"]
+
 [tool.setuptools.dynamic]
 version = {attr = "ekalavya.__version__"}

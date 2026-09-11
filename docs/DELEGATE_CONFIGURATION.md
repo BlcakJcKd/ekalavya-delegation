@@ -4,6 +4,38 @@ Configuration is user-owned availability policy. It determines which
 providers, catalogue routes, and named local routes are eligible; it does not
 change profile defaults or perform hidden failover.
 
+## Routing policy
+
+The same `config.toml` may also contain optional `[routing]` policy. Task keys
+are the existing categorical slugs. Targets are canonicalized to
+`primary-native`, `profile:<stable-profile>`, or `vllm:<name>`; bare stable
+profile IDs are accepted by the deterministic CLI for convenience.
+
+```toml
+[routing.preferences.review]
+preferred_targets = ["profile:sonnet", "profile:deepseek-flash", "primary-native"]
+allowed_targets = ["profile:sonnet", "profile:deepseek-flash", "primary-native"]
+excluded_targets = []
+
+[routing.reserves.claude_weekly]
+provider = "claude"
+scope_kind = "account"
+resource_kind = "provider_quota"
+window_kind = "weekly"
+minimum_remaining_fraction = 0.20
+```
+
+`preferred_targets` is ordered advice, not execution failover. A preferred
+target that is unavailable may be skipped for the next recommendation target;
+no delegate runs. `allowed_targets` and `excluded_targets` are hard constraints
+and cannot overlap. Reserves apply only to matching fresh numeric snapshots
+whose adapter/window contract and `reset_at` establish validity; otherwise
+quota remains unknown.
+
+TTY `eka setup` edits small task/preference lists. Advanced allowlists,
+exclusions, and reserves use `eka config routing list`, `set-preference`,
+`set-allowed`, `set-excluded`, and reserve subcommands.
+
 For human interactive configuration, run this from a TTY:
 
 ```bash

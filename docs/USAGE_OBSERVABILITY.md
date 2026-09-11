@@ -30,6 +30,14 @@ Token, latency, model identity, and cost values retain provenance. Unknown
 telemetry is `null`/unavailable, not zero. Provider-reported effective model
 identity is separate from the requested model and may be absent.
 
+`eka route --explain` may show local aggregate history as descriptive routing
+evidence. Token fields never rank routes in v0.4: tokenization, reasoning, and
+cache semantics are not comparable enough across providers and harnesses.
+Feedback can rank only when every compared target has at least five matched,
+rated outcomes for its exact currently resolved identity. Success and latency
+also require five comparable matched runs on every compared target. Missing
+history is neutral, never zero.
+
 Hosted quota adapters are not credentialed or scraped in v0.4. Codex, Claude,
 and Gemini report interactive-only status where their safe human-facing usage
 views cannot be read locally; DeepSeek and MiniMax report partial capability
