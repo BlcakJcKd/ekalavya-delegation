@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ekalavya.cli import main
+from ekalavya.ledger import connect, record_resolution, record_run, record_run_observability, set_feedback
 
 
 class EkalavyaCliTests(unittest.TestCase):
@@ -18,7 +19,7 @@ class EkalavyaCliTests(unittest.TestCase):
     def _files(self, root: Path):
         config = root / "config" / "ekalavya"
         config.mkdir(parents=True)
-        identity = {"provider": "claude", "family": "haiku", "provider_model_id": "claude-haiku", "display_name": "haiku", "capabilities": {"reasoning_values": ["medium"]}}
+        identity = {"provider": "claude", "family": "haiku", "provider_model_id": "claude-haiku", "display_name": "haiku", "execution_route": "haiku", "harness": "claude", "legacy_route": "haiku", "capabilities": {"reasoning_values": ["medium"], "harness_values": ["claude"]}}
         identity["identity_key"] = "haiku-key"
         identity["lifecycle"] = "current"
         (config / "catalogue.json").write_text(json.dumps([identity]))
@@ -156,6 +157,61 @@ class EkalavyaCliTests(unittest.TestCase):
             row = conn.execute("SELECT cache_read_tokens,cache_read_tokens_provenance,metadata_json FROM request_metrics").fetchone()
             self.assertEqual(row, (40, "provider_reported", "{}"))
             self.assertIsNone(conn.execute("SELECT cache_write_tokens FROM request_metrics").fetchone()[0])
+
+    def test_usage_human_summary_includes_outcomes_feedback_and_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self._xdg(root):
+                conn = connect()
+                record_run(conn, "success", {"profile": "haiku"})
+                record_resolution(conn, "success", {}, {"state": "resolved"})
+                record_run_observability(conn, "success", {"task": "review", "execution_status": "success", "total_tokens": 12, "total_tokens_provenance": "harness_reported"})
+                set_feedback(conn, "success", "useful")
+                conn.close()
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(main(["usage", "--period", "all"]), 0)
+            text = output.getvalue()
+            for expected in ("Successful: 1", "Failed: 0", "Success rate: 100%", "Feedback: 1/1 rated", "useful: 1", "Local Ekalavya history is not total provider-account usage", "direct provider/web/desktop activity", "other machines"):
+                self.assertIn(expected, text)
+
+    def test_usage_prune_requires_aware_cutoff_before_database_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self._xdg(root):
+                error = io.StringIO()
+                with redirect_stderr(error):
+                    self.assertEqual(main(["usage", "prune"]), 2)
+                self.assertIn("requires --before", error.getvalue())
+                self.assertFalse((root / "state" / "ekalavya" / "ledger.sqlite3").exists())
+                error = io.StringIO()
+                with redirect_stderr(error):
+                    self.assertEqual(main(["usage", "prune", "--before", "2026-01-02T00:00:00"]), 2)
+                self.assertIn("offset-aware", error.getvalue())
+                self.assertFalse((root / "state" / "ekalavya" / "ledger.sqlite3").exists())
+
+    def test_usage_prune_is_bounded_and_reset_requires_yes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self._xdg(root):
+                conn = connect()
+                for run_id, created_at in (("old", "2026-01-01T00:00:00+00:00"), ("new", "2026-02-01T00:00:00+00:00")):
+                    record_run(conn, run_id, {"profile": "haiku"}, started_at=created_at)
+                    record_resolution(conn, run_id, {}, {"state": "resolved"})
+                    record_run_observability(conn, run_id, {"task": "review", "execution_status": "success", "created_at": created_at})
+                conn.close()
+                self.assertEqual(main(["usage", "prune", "--before", "2026-01-15T00:00:00+00:00", "--json"]), 0)
+                conn = connect()
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM run_observability").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2)
+                conn.close()
+                error = io.StringIO()
+                with redirect_stderr(error):
+                    self.assertEqual(main(["usage", "reset"]), 2)
+                self.assertIn("requires --yes", error.getvalue())
+                conn = connect(); self.assertEqual(conn.execute("SELECT COUNT(*) FROM run_observability").fetchone()[0], 1); conn.close()
+                self.assertEqual(main(["usage", "reset", "--yes", "--json"]), 0)
+                conn = connect(); self.assertEqual(conn.execute("SELECT COUNT(*) FROM run_observability").fetchone()[0], 0); self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 2); conn.close()
 
 
 if __name__ == "__main__":

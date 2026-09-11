@@ -58,6 +58,20 @@ class UsageObservabilityTests(unittest.TestCase):
         self.assertNotIn("provider_reported_usage", export_usage(self.conn, fmt="json", period="all"))
         self.assertNotIn("provider_reported_usage", export_usage(self.conn, fmt="csv", period="all"))
 
+    def test_harness_reported_usage_preserves_provenance_and_nulls(self):
+        record_run(self.conn, "claude", {"profile": "p"}, provider="claude", identity_key="requested")
+        persist_execution_observability(
+            self.conn, "claude", run_data={"task": "coding", "requested_profile": "p", "primary_provider": "claude"},
+            execution={"state": "completed", "provider_reported_usage": {"input_tokens": 120, "output_tokens": 34, "cache_read_tokens": 18, "cache_write_tokens": 6}, "usage_provenance": "harness_reported"},
+        )
+        row = self.conn.execute("SELECT input_tokens,output_tokens,cache_read_tokens,reasoning_tokens,provider_reported_model_id,input_tokens_provenance,total_tokens,total_tokens_provenance FROM run_observability").fetchone()
+        self.assertEqual(tuple(row), (120, 34, 18, None, None, "harness_reported", 154, "derived"))
+        metric = self.conn.execute("SELECT cache_write_tokens,cache_write_tokens_provenance FROM request_metrics").fetchone()
+        self.assertEqual(tuple(metric), (6, "harness_reported"))
+        exported = export_usage(self.conn, fmt="json", period="all")
+        self.assertNotIn("sanitized response content", exported)
+        self.assertNotIn("modelUsage", exported)
+
     def test_exported_safety_gate_rejects_nested_and_identity_secrets(self):
         assert_safe_analytics_payload({"input_tokens": 1, "cache_read_tokens": 0})
         for payload in ({"chain_of_thought": "private"}, {"api_key": "secret"}, {"safe": {"prompt": "private"}}, {"raw_payload": []}):

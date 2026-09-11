@@ -152,6 +152,8 @@ def _gemini_flash_record(
         "availability_observed_at": observed_at,
         "discovery_client_version": serving_engine_version,
         "transport": "agy",
+        "execution_route": "flash",
+        "harness": "agy",
     })
     if existing is None:
         return incoming

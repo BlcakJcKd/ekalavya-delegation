@@ -7,6 +7,7 @@ from typing import Any
 
 from .catalogue import expand_runtime_variants
 from .deepseek import DEEPSEEK_PRO_PROVIDER_MODEL_ID, DeepSeekExactIdentityError, assert_deepseek_pro_exact
+from .readiness import binding_preflight
 from .schema import CandidateIdentity, ReasoningPolicy, Resolution, RunIntent
 
 SAME_PROVIDER_NATIVE = {
@@ -104,6 +105,10 @@ def resolve(
         supported_harnesses = tuple(value for value in (chosen.get("harness"), chosen.get("serving_engine"), chosen.get("transport")) if value)
     if intent.harness and intent.harness not in supported_harnesses:
         return Resolution(intent, None, reason=f"unsupported harness {intent.harness!r}; supported: {list(supported_harnesses)!r}", state="invalid-harness", alternatives=alternatives)
-    candidate = CandidateIdentity(**{k: chosen.get(k) for k in CandidateIdentity.__dataclass_fields__})
     route = chosen.get("execution_route") or chosen.get("route") or chosen.get("legacy_route")
-    return Resolution(intent, candidate, reasoning, intent.harness or profile.get("harness") or chosen.get("harness") or chosen.get("serving_engine") or chosen.get("transport"), chosen.get("harness_version") or chosen.get("serving_engine_version"), chosen.get("transport"), route, "configured profile default" if default_key else "explicit sole candidate", "resolved", alternatives)
+    harness = intent.harness or profile.get("harness") or chosen.get("harness") or chosen.get("serving_engine") or chosen.get("transport")
+    preflight = binding_preflight(chosen, route, harness)
+    if not preflight["ok"]:
+        return Resolution(intent, None, reason=str(preflight["reason"]), state="harness-unavailable", alternatives=alternatives)
+    candidate = CandidateIdentity(**{k: chosen.get(k) for k in CandidateIdentity.__dataclass_fields__})
+    return Resolution(intent, candidate, reasoning, harness, chosen.get("harness_version") or chosen.get("serving_engine_version"), chosen.get("transport"), route, "configured profile default" if default_key else "explicit sole candidate", "resolved", alternatives)

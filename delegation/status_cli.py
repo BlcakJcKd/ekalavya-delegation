@@ -61,6 +61,7 @@ def build_report(
     vllm_routes: dict | None = None,
     live: bool = False,
     live_status: dict | None = None,
+    route_readiness: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     resolved_config = config if config is not None else load_config()
     resolved_vllm = dict(vllm_routes) if vllm_routes is not None else (
@@ -79,6 +80,19 @@ def build_report(
     routes = compute_status(
         resolved_config, primary=primary, which=which, vllm_routes=resolved_vllm
     )
+    route_payloads = [r.as_dict() for r in routes]
+    for route in route_payloads:
+        readiness = (route_readiness or {}).get(route["route"])
+        if readiness is None:
+            continue
+        route.update(readiness)
+        # A route can only be effectively executable when its current local
+        # binding and readiness proof agree.  Persisted evidence is exposed as
+        # diagnostic context, never as an override for a broken binding.
+        if route["effective"] == "available" and readiness.get("harness_ready") != "ready":
+            route["effective"] = "unavailable"
+            route["effective_enabled"] = False
+            route["effective_reason"] = readiness.get("readiness_reason")
     report = {
         "config_path": str(config_path()),
         "vllm_config_path": str(vllm_config_path()),
@@ -87,7 +101,7 @@ def build_report(
         "skill": skill_status(),
         "declared_primary": normalized_primary or "not-declared",
         "quota": "user-managed / unknown",
-        "routes": [r.as_dict() for r in routes],
+        "routes": route_payloads,
     }
     if live:
         observed = live_status if live_status is not None else inspect_vllm_live_routes(resolved_vllm)

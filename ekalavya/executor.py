@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from delegation.core import run_consultation
+from .readiness import binding_preflight
 
 
 def execute(resolution: dict, prompt_file: Path, workspace: Path, *, primary: str | None = None, timeout_seconds: int | None = None) -> dict[str, object]:
@@ -18,8 +19,9 @@ def execute(resolution: dict, prompt_file: Path, workspace: Path, *, primary: st
     """
     candidate = resolution.get("resolved") or {}
     route = candidate.get("execution_route") or candidate.get("legacy_route")
-    if not route:
-        return {"state": "harness-unavailable", "reason": "resolved candidate has no configured execution adapter"}
+    checked = binding_preflight(candidate, route, candidate.get("harness"))
+    if not checked["ok"]:
+        return {"state": "harness-unavailable", "reason": checked["reason"]}
     task = prompt_file.read_text(encoding="utf-8")
     timeout = timeout_seconds or 300
     if route.startswith("vllm:"):
@@ -34,7 +36,7 @@ def execute(resolution: dict, prompt_file: Path, workspace: Path, *, primary: st
     if metadata.is_file():
         import json
         captured = json.loads(metadata.read_text(encoding="utf-8"))
-        for key in ("response_status", "response_recorded", "response_file", "request_count", "wall_seconds", "timed_out", "provider", "requested_model", "provider_reported_model_id", "provider_reported_usage", "requested_effort", "transport", "error_category"):
+        for key in ("response_status", "response_recorded", "response_file", "request_count", "wall_seconds", "timed_out", "provider", "requested_model", "provider_reported_model_id", "provider_reported_usage", "usage_provenance", "telemetry_parse_warning", "requested_effort", "transport", "error_category"):
             if key in captured:
                 result[key] = captured[key]
     return result

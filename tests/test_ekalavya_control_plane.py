@@ -97,7 +97,12 @@ class EkalavyaControlPlaneTests(unittest.TestCase):
         current = CandidateIdentity("gemini", "flash", "gemini-3.7-flash-medium", capabilities={"reasoning_values": ["medium"]})
         previous = CandidateIdentity("gemini", "flash", "gemini-3.6-flash-medium", capabilities={"reasoning_values": ["medium"]})
         profile = {"default_identity_key": current.identity_key, "permitted_candidates": [current.identity_key, previous.identity_key], "reasoning_policy": "overrideable"}
-        result = resolve(RunIntent("flash", provider="gemini", model=previous.provider_model_id, reasoning="medium"), profile, [dict(current.as_dict(), identity_key=current.identity_key, lifecycle="current"), dict(previous.as_dict(), identity_key=previous.identity_key, lifecycle="previous")])
+        entries = [
+            dict(current.as_dict(), identity_key=current.identity_key, lifecycle="current", execution_route="flash", legacy_route="flash", harness="agy", serving_engine="agy", transport="agy"),
+            dict(previous.as_dict(), identity_key=previous.identity_key, lifecycle="previous", execution_route="flash", legacy_route="flash", harness="agy", serving_engine="agy", transport="agy"),
+        ]
+        with patch("ekalavya.readiness.shutil.which", return_value="/fake/agy"):
+            result = resolve(RunIntent("flash", provider="gemini", model=previous.provider_model_id, reasoning="medium"), profile, entries)
         self.assertEqual(result.state, "resolved")
         self.assertEqual(result.candidate.provider_model_id, previous.provider_model_id)
 

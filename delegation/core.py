@@ -237,6 +237,58 @@ def _capture_text(value: object) -> str:
     return value if isinstance(value, str) else str(value)
 
 
+class _AmbiguousClaudeRecord(ValueError):
+    """Raised when a structured Claude result contains duplicate JSON keys."""
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _AmbiguousClaudeRecord(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _claude_usage_projection(stdout: str) -> tuple[dict[str, int] | None, str | None]:
+    """Read Claude's single structured final-result ``usage`` object only.
+
+    This deliberately rejects JSONL, generic embedded JSON, duplicate keys,
+    and any record other than Claude's retained top-level ``type=result``
+    shape.  It never returns content, tools, modelUsage, or cost estimates.
+    """
+    try:
+        record = json.loads(stdout, object_pairs_hook=_unique_json_object)
+    except (_AmbiguousClaudeRecord, json.JSONDecodeError):
+        return None, "Claude structured usage was absent or ambiguous; telemetry was not inferred"
+    if not isinstance(record, dict) or (
+        record.get("type") != "result"
+        or record.get("subtype") != "success"
+        or record.get("is_error") is not False
+        or not isinstance(record.get("stop_reason"), str)
+        or not isinstance(record.get("terminal_reason"), str)
+    ):
+        return None, None
+    usage = record.get("usage")
+    if not isinstance(usage, dict):
+        return None, "Claude result did not include a structured usage object"
+
+    def token(field: str) -> int | None:
+        value = usage.get(field)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+    details = usage.get("output_tokens_details")
+    thinking = details.get("thinking_tokens") if isinstance(details, dict) else None
+    projection = {
+        "input_tokens": token("input_tokens"),
+        "output_tokens": token("output_tokens"),
+        "cache_read_tokens": token("cache_read_input_tokens"),
+        "cache_write_tokens": token("cache_creation_input_tokens"),
+        "reasoning_tokens": thinking if isinstance(thinking, int) and not isinstance(thinking, bool) and thinking >= 0 else None,
+    }
+    return ({key: value for key, value in projection.items() if value is not None} or None), None
+
+
 def _validated_log_root(log_root: Path, workspace: Path) -> Path:
     """Resolve a private run root outside both the scope and Git trees."""
     resolved = log_root.expanduser().resolve()
@@ -317,6 +369,11 @@ def run_consultation(
         stdout = _capture_text(exc.stdout)
         stderr = _capture_text(exc.stderr)
     wall_seconds = time.monotonic() - begun
+
+    usage_projection: dict[str, int] | None = None
+    usage_warning: str | None = None
+    if spec.name in {"haiku", "sonnet"}:
+        usage_projection, usage_warning = _claude_usage_projection(stdout)
 
     provider_success = exit_code == 0
     inference_occurred = provider_success and bool(stdout.strip())
@@ -403,5 +460,11 @@ def run_consultation(
         "recursive_delegation_enabled": False,
         "child_delegation_depth": 1,
     }
+    if usage_projection is not None:
+        # Claude Code is the reporting harness; this is not billing truth.
+        record["provider_reported_usage"] = usage_projection
+        record["usage_provenance"] = "harness_reported"
+    if usage_warning is not None:
+        record["telemetry_parse_warning"] = usage_warning
     persist_text(record_dir, "execution.json", json.dumps(record, indent=2, sort_keys=True) + "\n")
     return exit_code, record_dir

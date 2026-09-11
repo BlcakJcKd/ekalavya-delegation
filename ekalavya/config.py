@@ -153,6 +153,7 @@ def ensure_control_files(target: Path | None = None) -> dict[str, object]:
                 "lifecycle": "candidate",
                 "legacy_route": route,
                 "execution_route": route,
+                "harness": spec.executable,
                 "provider_aliases": [DEEPSEEK_V4_FLASH_PROVIDER_MODEL_ID, "deepseek-v4-flash-vision-exp"],
                 "transport": routing.ROUTE_TRANSPORT.get(route),
             })
@@ -184,6 +185,7 @@ def ensure_control_files(target: Path | None = None) -> dict[str, object]:
                 "lifecycle": "current",
                 "legacy_route": route,
                 "execution_route": route,
+                "harness": spec.executable,
                 "transport": routing.ROUTE_TRANSPORT.get(route),
             })
             catalogue.append(item)
@@ -197,7 +199,7 @@ def ensure_control_files(target: Path | None = None) -> dict[str, object]:
             })
             continue
         identity = CandidateIdentity(routing.ROUTE_PROVIDER[route], route, spec.model, route, capabilities={"reasoning_values": [spec.effort] if spec.effort else []})
-        item = identity.as_dict(); item.update({"identity_key": identity.identity_key, "lifecycle": "current", "legacy_route": route, "transport": routing.ROUTE_TRANSPORT.get(route)})
+        item = identity.as_dict(); item.update({"identity_key": identity.identity_key, "lifecycle": "current", "legacy_route": route, "execution_route": route, "harness": spec.executable, "transport": routing.ROUTE_TRANSPORT.get(route)})
         catalogue.append(item)
         profiles.append({"name": route, "description": f"Stable explicit route {route}", "default_identity_key": identity.identity_key, "permitted_candidates": [identity.identity_key], "reasoning_policy": "fixed", "default_reasoning": spec.effort})
     created: list[str] = []

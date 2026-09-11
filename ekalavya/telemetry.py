@@ -46,19 +46,20 @@ def safe_usage_from_execution(raw: dict[str, Any]) -> dict[str, Any]:
     total = _int(usage.get("total_tokens"))
     if total is None and input_tokens is not None and output_tokens is not None:
         total = input_tokens + output_tokens
+    provenance = raw.get("usage_provenance") if raw.get("usage_provenance") in {"provider_reported", "harness_reported"} else "provider_reported"
     return {
         "input_tokens": input_tokens, "output_tokens": output_tokens,
         "reasoning_tokens": reasoning_tokens, "cache_read_tokens": cache_read,
         "cache_write_tokens": cache_write,
         "uncached_input_tokens": input_tokens - cache_read if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else None,
         "total_tokens": total,
-        "input_tokens_provenance": "provider_reported" if input_tokens is not None else "unavailable",
-        "output_tokens_provenance": "provider_reported" if output_tokens is not None else "unavailable",
-        "reasoning_tokens_provenance": "provider_reported" if reasoning_tokens is not None else "unavailable",
-        "cache_read_tokens_provenance": "provider_reported" if cache_read is not None else "unavailable",
-        "cache_write_tokens_provenance": "provider_reported" if cache_write is not None else "unavailable",
+        "input_tokens_provenance": provenance if input_tokens is not None else "unavailable",
+        "output_tokens_provenance": provenance if output_tokens is not None else "unavailable",
+        "reasoning_tokens_provenance": provenance if reasoning_tokens is not None else "unavailable",
+        "cache_read_tokens_provenance": provenance if cache_read is not None else "unavailable",
+        "cache_write_tokens_provenance": provenance if cache_write is not None else "unavailable",
         "uncached_input_tokens_provenance": "derived" if input_tokens is not None and cache_read is not None and cache_read <= input_tokens else "unavailable",
-        "total_tokens_provenance": "provider_reported" if usage.get("total_tokens") is not None else ("derived" if total is not None else "unavailable"),
+        "total_tokens_provenance": provenance if usage.get("total_tokens") is not None else ("derived" if total is not None else "unavailable"),
         "token_telemetry_status": "complete" if total is not None else ("partial" if any(x is not None for x in (input_tokens, output_tokens, reasoning_tokens, cache_read)) else "unavailable"),
         "provider_reported_model_id": raw.get("provider_reported_model_id") if isinstance(raw.get("provider_reported_model_id"), str) and len(raw["provider_reported_model_id"]) <= 256 else None,
     }
@@ -82,13 +83,13 @@ def persist_execution_observability(conn: Any, run_id: str, *, run_data: dict[st
         "failure_category": execution.get("error_category") if isinstance(execution.get("error_category"), str) else None,
         "wall_seconds": _float(execution.get("wall_seconds")),
         "provider_request_count": execution.get("request_count") if isinstance(execution.get("request_count"), int) else (1 if run_data.get("harness_name") == "vllm" else None),
-        "telemetry_status": "complete" if execution else "unavailable",
+        "telemetry_status": "unavailable" if execution.get("telemetry_parse_warning") else ("complete" if execution else "unavailable"),
     }
     record_run_observability(conn, run_id, data)
     if execution:
         metric = {key: usage[key] for key in ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens", "input_tokens_provenance", "output_tokens_provenance", "reasoning_tokens_provenance", "cache_read_tokens_provenance", "cache_write_tokens_provenance", "total_tokens_provenance")}
         metric.update({"ordinal": 1, "model": usage.get("provider_reported_model_id"), "provider": run_data.get("primary_provider")})
-        if any(metric.get(key) is not None for key in ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "total_tokens")):
+        if any(metric.get(key) is not None for key in ("input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens")):
             record_safe_request_metric(conn, run_id, metric)
 
 

@@ -18,6 +18,7 @@ eka insights --json
 eka feedback RUN_ID --outcome useful
 eka feedback RUN_ID --delete
 eka usage prune --before 2026-01-01T00:00:00+00:00
+eka usage reset --yes
 ```
 
 `--task` on `eka run` is explicit categorical metadata. Values are lowercase
@@ -56,6 +57,12 @@ Observability controls affect only observability-owned enrichment:
 current feedback. They do not delete canonical runs, resolution decisions,
 promotion/default history, benchmark evidence, retained responses, catalogue
 provenance, or cost observations.
+
+`eka usage prune` always requires `--before` with an offset-aware ISO-8601
+timestamp and deletes only observability-owned records older than that cutoff.
+Bare `eka usage prune` is a validation error and changes nothing. `eka usage
+reset --yes` is the separate, explicit whole-observability reset; it retains
+the canonical audit history listed above.
 
 All summaries are deterministic and computed in UTC. Periods use half-open
 `[start_utc, end_utc)` boundaries. Median uses sorted linear

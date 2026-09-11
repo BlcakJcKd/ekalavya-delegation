@@ -26,7 +26,7 @@ from .config import config_root, load_profiles, migrate_legacy_config, permit_pr
 from .discovery import DiscoveryError, discover_gemini
 from .executor import execute
 from .harness_registry import current_registry, validate_registry
-from .ledger import connect, default_db_path, finalize_run, record_availability, record_default_change, record_promotion_event, record_resolution, record_run, upsert_model
+from .ledger import connect, default_db_path, finalize_run, normalize_cutoff, record_availability, record_default_change, record_promotion_event, record_resolution, record_run, upsert_model
 from .migrate import migrate_all
 from .resolver import resolve
 from benchmark.review_bundle import create_review_bundle
@@ -190,10 +190,43 @@ def _availability_payload(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _persisted_model_availability() -> dict[str, dict[str, str]]:
+    """Read prior local discovery facts without creating or migrating a ledger."""
+    path = default_db_path()
+    if not path.is_file():
+        return {}
+    try:
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT m.identity_key,a.state,a.observed_at,a.source "
+            "FROM model_availability a JOIN models m ON m.id=a.model_id "
+            "WHERE a.id IN (SELECT MAX(id) FROM model_availability GROUP BY model_id)"
+        ).fetchall()
+    except sqlite3.DatabaseError:
+        return {}
+    finally:
+        if "conn" in locals():
+            conn.close()
+    return {
+        str(identity_key): {"state": str(state), "observed_at": str(observed_at), "source": str(source) if source is not None else "unknown"}
+        for identity_key, state, observed_at, source in rows
+    }
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     root, cat, prof = _paths(); entries = load_catalogue(cat); profiles = _profiles(prof)
     try:
-        routing_report = build_report(getattr(args, "primary", None), live=getattr(args, "live", False))
+        from .readiness import profile_readiness
+
+        observed = _persisted_model_availability()
+        readiness = {
+            route: profile_readiness(route, profiles, entries, observed)
+            for route in routing.MODELS
+        }
+        routing_report = build_report(
+            getattr(args, "primary", None), live=getattr(args, "live", False),
+            route_readiness=readiness,
+        )
     except ValueError as exc:
         print(f"status error: {exc}", file=sys.stderr); return 2
     result = {"product": "Ekalavya", "version": __version__, "primary": getattr(args, "primary", None), "config_root": str(root), "ledger": str(default_db_path()), "profiles": [{"name": p.get("name"), "default": p.get("default_identity_key"), "reasoning_policy": p.get("reasoning_policy", "overrideable"), "availability": "configured" if p.get("default_identity_key") else "not-configured"} for p in profiles], "catalogue": [{k: e.get(k) for k in ("provider", "family", "provider_model_id", "lifecycle", "identity_key")} for e in entries], "routing": routing_report}
@@ -459,6 +492,23 @@ def _usage_filters(args: argparse.Namespace) -> dict[str, str | None]:
 
 
 def cmd_usage(args: argparse.Namespace) -> int:
+    if args.action == "prune" and not args.before:
+        print("usage prune requires --before <OFFSET-AWARE-ISO-TIMESTAMP>; use usage reset --yes to clear all observability data", file=sys.stderr)
+        return 2
+    if args.action in {"delete", "reset"} and not args.yes:
+        print(f"usage {args.action} requires --yes; use usage prune --before <OFFSET-AWARE-ISO-TIMESTAMP> for bounded deletion", file=sys.stderr)
+        return 2
+    if args.action != "prune" and args.before:
+        print("usage --before is valid only with usage prune", file=sys.stderr)
+        return 2
+    if args.action == "prune":
+        try:
+            # Validate before opening the ledger: connecting can create or
+            # migrate it, so a malformed cutoff must be a true no-op.
+            args.before = normalize_cutoff(args.before)
+        except ValueError as exc:
+            print(f"usage prune: {exc}; provide an offset-aware ISO timestamp", file=sys.stderr)
+            return 2
     conn = connect()
     if args.action in {"delete", "reset", "prune"}:
         before = args.before if args.action == "prune" else None
@@ -490,10 +540,28 @@ def cmd_usage(args: argparse.Namespace) -> int:
             shown = f"{value}{quota.get('units') or ''}" if value is not None else "unknown"
             print(f"  {quota['provider']:<10} {quota['scope_kind']:<15} {shown:<12} {quota['capability']} ({quota['source']})")
         print("  unknown means telemetry unavailable; local_capacity is not provider account quota.")
-        print(f"Local Ekalavya history — {args.period}: {payload['summary']['runs']} observed run(s)")
+        summary = payload["summary"]
+        feedback = summary["feedback"]
+        print(f"Local Ekalavya history — {args.period}")
+        print(f"Runs: {summary['runs']}")
+        print(f"Successful: {summary['successful_runs']}")
+        print(f"Failed: {summary['failed_runs']}")
+        if summary["aborted_runs"]:
+            print(f"Aborted: {summary['aborted_runs']}")
+        if summary["success_rate"] is not None:
+            print(f"Success rate: {summary['success_rate']:.0%}")
+        elif summary["non_terminal_runs"]:
+            print("Success rate: unavailable (non-terminal runs present)")
         print(f"Reported tokens: {payload['summary']['reported_tokens']['value'] if payload['summary']['reported_tokens']['value'] is not None else 'telemetry unavailable'}")
         print(f"Telemetry coverage: {payload['coverage']['token_telemetry']['available']}/{payload['coverage']['token_telemetry']['eligible']} runs")
         print(f"Reasoning-token coverage: {payload['coverage']['reasoning_tokens']['available']}/{payload['coverage']['reasoning_tokens']['eligible']} runs")
+        print(f"Feedback: {feedback['available']}/{summary['runs']} rated")
+        for outcome in ("useful", "mixed", "not-useful"):
+            print(f"  {outcome}: {feedback['counts'][outcome]}")
+        if feedback["useful_rate"] is not None:
+            print(f"  useful rate: {feedback['useful_rate']:.0%}")
+        print("Scope: Local Ekalavya history is not total provider-account usage.")
+        print("May exclude native same-provider agents, direct provider/web/desktop activity, other machines, and activity outside Ekalavya.")
         if args.by:
             for group in payload["groups"]: print(f"  {group['key']}: {group['summary']['runs']} run(s)")
     return 0
@@ -537,7 +605,7 @@ def _parser() -> argparse.ArgumentParser:
     b=bench_sub.add_parser("bundle", help="create an allowlisted private experiment review bundle"); b.add_argument("experiment"); b.add_argument("--output", type=Path); common(b); b.set_defaults(func=cmd_bench)
     q.set_defaults(func=cmd_bench, bench_action=None, json=False)
     q=sub.add_parser("run"); q.add_argument("profile"); q.add_argument("--provider"); q.add_argument("--family"); q.add_argument("--model"); q.add_argument("--reasoning"); q.add_argument("--harness"); q.add_argument("--workspace", type=Path); q.add_argument("--prompt-file", type=Path); q.add_argument("--primary"); q.add_argument("--timeout", type=int, default=None); q.add_argument("--task", default="unspecified"); q.add_argument("--json", action="store_true"); q.set_defaults(func=cmd_run)
-    q=sub.add_parser("usage", help="inspect local observed usage and honest quota status"); q.add_argument("action", nargs="?", choices=["inspect", "export", "prune", "delete", "reset"]); q.add_argument("--period", default="7d"); q.add_argument("--by", choices=["task", "profile", "provider", "model"]); q.add_argument("--task"); q.add_argument("--profile"); q.add_argument("--provider"); q.add_argument("--model"); q.add_argument("--refresh-quota", action="store_true"); q.add_argument("--before"); q.add_argument("--format", choices=["json", "csv"], default="json"); q.add_argument("--output", type=Path); common(q); q.set_defaults(func=cmd_usage)
+    q=sub.add_parser("usage", help="inspect local observed usage and honest quota status"); q.add_argument("action", nargs="?", choices=["inspect", "export", "prune", "delete", "reset"]); q.add_argument("--period", default="7d"); q.add_argument("--by", choices=["task", "profile", "provider", "model"]); q.add_argument("--task"); q.add_argument("--profile"); q.add_argument("--provider"); q.add_argument("--model"); q.add_argument("--refresh-quota", action="store_true"); q.add_argument("--before"); q.add_argument("--yes", action="store_true", help="confirm complete observability reset"); q.add_argument("--format", choices=["json", "csv"], default="json"); q.add_argument("--output", type=Path); common(q); q.set_defaults(func=cmd_usage)
     q=sub.add_parser("insights", help="deterministic local usage insights"); q.add_argument("--period", default="7d"); q.add_argument("--by", choices=["task", "profile", "provider", "model"]); q.add_argument("--task"); q.add_argument("--profile"); q.add_argument("--provider"); q.add_argument("--model"); common(q); q.set_defaults(func=cmd_insights)
     q=sub.add_parser("feedback", help="record or delete current categorical feedback"); q.add_argument("run_id"); q.add_argument("--outcome", choices=["useful", "mixed", "not-useful"]); q.add_argument("--delete", action="store_true"); common(q); q.set_defaults(func=cmd_feedback)
     return p

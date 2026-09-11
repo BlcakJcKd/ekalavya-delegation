@@ -61,7 +61,8 @@ class DeepSeekLifecycleTests(unittest.TestCase):
             ensure_control_files(root)
             entries = json.loads((root / "catalogue.json").read_text())
             profile = next(item for item in json.loads((root / "profiles.json").read_text()) if item["name"] == "deepseek-flash")
-            result = resolve(RunIntent("deepseek-flash"), profile, entries, availability={"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-flash": {"enabled": True}}})
+            with patch("ekalavya.readiness.shutil.which", return_value="/fake/codex-deepseek"):
+                result = resolve(RunIntent("deepseek-flash"), profile, entries, availability={"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-flash": {"enabled": True}}})
             self.assertEqual(result.state, "resolved")
             self.assertEqual(result.candidate.provider_model_id, "deepseek-flash")
             self.assertEqual(result.candidate.display_name, "DeepSeek V4.1 Flash")

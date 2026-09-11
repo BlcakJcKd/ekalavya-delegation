@@ -1,0 +1,25 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "stop_reason": "end_turn",
+  "terminal_reason": "completed",
+  "usage": {
+    "input_tokens": 120,
+    "output_tokens": 34,
+    "cache_read_input_tokens": 18,
+    "cache_creation_input_tokens": 6,
+    "output_tokens_details": {
+      "thinking_tokens": 9
+    },
+    "iterations": 1
+  },
+  "modelUsage": {
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 99999,
+      "outputTokens": 99999
+    }
+  },
+  "total_cost_usd": 99.99,
+  "result": "sanitized response content that must not enter analytics"
+}
