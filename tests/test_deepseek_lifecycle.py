@@ -17,6 +17,8 @@ from ekalavya.deepseek import (
     assert_deepseek_pro_exact,
     map_reasoning_level,
 )
+from ekalavya.executor import execute
+from ekalavya.readiness import binding_preflight, profile_readiness
 from ekalavya.resolver import resolve
 from ekalavya.schema import RunIntent
 
@@ -46,6 +48,7 @@ class DeepSeekLifecycleTests(unittest.TestCase):
             self.assertEqual(current["generation"], "v4.1")
             self.assertEqual(current["lifecycle"], "candidate")
             self.assertEqual(current["execution_route"], "deepseek-flash")
+            self.assertEqual(current["harness"], "codex-deepseek")
             self.assertNotIn("promotion_basis", current)
             self.assertEqual(current["capabilities"]["input_modalities"], ["text"])
             self.assertTrue(current["capabilities"]["provider_native_vision"])
@@ -66,6 +69,61 @@ class DeepSeekLifecycleTests(unittest.TestCase):
             self.assertEqual(result.state, "resolved")
             self.assertEqual(result.candidate.provider_model_id, "deepseek-flash")
             self.assertEqual(result.candidate.display_name, "DeepSeek V4.1 Flash")
+
+    def test_legacy_v41_flash_without_harness_uses_registered_route_binding(self):
+        """A missing old metadata field must not degrade a known exact route."""
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            ensure_control_files(root)
+            entries = json.loads((root / "catalogue.json").read_text())
+            profiles = json.loads((root / "profiles.json").read_text())
+            profile = next(item for item in profiles if item["name"] == "deepseek-flash")
+            current = next(item for item in entries if item["identity_key"] == profile["default_identity_key"])
+            current.pop("harness")
+            current["lifecycle"] = "current"
+            availability = {profile["default_identity_key"]: {"state": "available", "observed_at": "2026-09-13T00:00:00+00:00", "source": "prior discovery"}}
+            config = {"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-flash": {"enabled": True}}}
+            readiness = profile_readiness("deepseek-flash", profiles, entries, availability, which=lambda name: "/fake/codex-deepseek")
+            self.assertEqual(readiness["harness_ready"], "ready")
+            self.assertEqual(readiness["resolved_harness"], "codex-deepseek")
+            with patch("ekalavya.readiness.shutil.which", return_value="/fake/codex-deepseek"):
+                result = resolve(RunIntent("deepseek-flash"), profile, entries, availability=config)
+            self.assertEqual(result.state, "resolved")
+            self.assertEqual(result.candidate.provider_model_id, "deepseek-flash")
+            self.assertEqual(result.resolved_reasoning, "high")
+            self.assertEqual(result.resolved_harness, "codex-deepseek")
+            record = result.as_dict()
+            self.assertEqual(record["resolved"]["harness"], "codex-deepseek")
+            checked = binding_preflight(record["resolved"], record["execution_route"], record["resolved_harness"], model="deepseek-flash", reasoning="high", which=lambda name: "/fake/codex-deepseek")
+            self.assertTrue(checked["ok"])
+            prompt = root / "prompt.md"
+            prompt.write_text("binding check")
+            captured = {}
+
+            def fake_consultation(*args, **kwargs):
+                captured.update(kwargs)
+                evidence = root / "evidence"
+                evidence.mkdir()
+                (evidence / "execution.json").write_text("{}")
+                return 0, evidence
+
+            with patch("ekalavya.executor.binding_preflight", return_value={"ok": True}), patch("ekalavya.executor.run_consultation", side_effect=fake_consultation):
+                outcome = execute(record, prompt, root)
+            self.assertEqual(outcome["state"], "completed")
+            self.assertEqual(captured["model"], "deepseek-flash")
+            self.assertEqual(captured["effort"], "high")
+
+    def test_missing_registered_deepseek_route_remains_unavailable(self):
+        entry = {
+            "provider": "deepseek", "family": "flash", "provider_model_id": "deepseek-flash",
+            "display_name": "DeepSeek V4.1 Flash", "capabilities": {"reasoning_values": ["high"]},
+            "identity_key": "flash", "lifecycle": "current", "execution_route": "not-a-route",
+            "legacy_route": "not-a-route", "transport": "codex",
+        }
+        profile = {"name": "deepseek-flash", "default_identity_key": "flash", "permitted_candidates": ["flash"], "reasoning_policy": "fixed", "default_reasoning": "high"}
+        readiness = profile_readiness("deepseek-flash", [profile], [entry], {"flash": {"state": "available"}}, which=lambda name: "/fake/codex-deepseek")
+        self.assertEqual(readiness["harness_ready"], "unavailable")
+        self.assertIn("execution adapter", readiness["readiness_reason"])
 
     def test_pro_cutoff_is_deterministic_on_both_sides(self):
         before = DEEPSEEK_PRO_CUTOFF_UTC - timedelta(seconds=1)

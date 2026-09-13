@@ -16,6 +16,35 @@ from delegation import routing
 from .harness_registry import audited_registry
 
 
+def resolved_harness_binding(
+    candidate: dict[str, Any], route: str | None, *,
+    profile_harness: str | None = None, requested_harness: str | None = None,
+) -> str | None:
+    """Resolve a harness from explicit metadata or its registered route.
+
+    ``transport`` describes a protocol, not necessarily the executable.  Older
+    private catalogue entries predate the explicit ``harness`` field and may
+    therefore say ``transport: codex`` for the ``codex-deepseek`` launcher.
+    For those entries, the existing registered execution route remains the
+    authoritative compatibility binding.  Explicit harness metadata is never
+    overwritten: a contradiction still reaches ``binding_preflight`` and fails
+    closed.
+    """
+    explicit = requested_harness or profile_harness or candidate.get("harness") or candidate.get("serving_engine")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    if isinstance(route, str) and route.startswith("vllm:"):
+        return "vllm"
+    if route:
+        from delegation.core import DELEGATES
+
+        spec = DELEGATES.get(route)
+        if spec is not None:
+            return spec.executable
+    transport = candidate.get("transport")
+    return transport if isinstance(transport, str) and transport else None
+
+
 def _registry_capability(harness: str) -> tuple[bool, str | None]:
     """Return ordinary-execution support for audited harnesses.
 
@@ -202,7 +231,7 @@ def profile_readiness(
             return {
                 "profile_configured": True,
                 "execution_route": candidate.get("execution_route") or candidate.get("route") or candidate.get("legacy_route"),
-                "resolved_harness": profile.get("harness") or candidate.get("harness") or candidate.get("serving_engine") or candidate.get("transport"),
+                "resolved_harness": resolved_harness_binding(candidate, candidate.get("execution_route") or candidate.get("route") or candidate.get("legacy_route"), profile_harness=profile.get("harness")),
                 "harness_ready": "unavailable",
                 "readiness_reason": f"harness-unavailable: no runtime variant supports reasoning {selected_reasoning!r}",
                 "harness_detected": False,
@@ -212,8 +241,8 @@ def profile_readiness(
         candidate = dict(candidate)
         candidate.update({key: value for key, value in selected_variant.items() if key != "lifecycle"})
         candidate["variant"] = selected_reasoning
-    selected_harness = profile.get("harness") or candidate.get("harness") or candidate.get("serving_engine") or candidate.get("transport")
     selected_route = candidate.get("execution_route") or candidate.get("route") or candidate.get("legacy_route")
+    selected_harness = resolved_harness_binding(candidate, selected_route, profile_harness=profile.get("harness"))
     checked = binding_preflight(
         candidate, selected_route, selected_harness,
         model=candidate.get("provider_model_id"),
