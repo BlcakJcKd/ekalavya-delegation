@@ -88,7 +88,7 @@ def _configured(config: dict, route: str) -> tuple[bool, str | None, bool, str |
     provider_enabled = bool(provider_entry.get("enabled", True))
     provider_reason = provider_entry.get("reason")
     if not provider_enabled:
-        return model_enabled, model_reason, provider_enabled, provider_reason, False, provider_reason
+        return model_enabled, model_reason, provider_enabled, provider_reason, False, provider_reason or "provider-disabled"
     if not model_enabled:
         return model_enabled, model_reason, provider_enabled, provider_reason, False, model_reason
     return model_enabled, model_reason, provider_enabled, provider_reason, True, None

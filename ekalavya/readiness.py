@@ -18,7 +18,7 @@ from .harness_registry import audited_registry
 
 def resolved_harness_binding(
     candidate: dict[str, Any], route: str | None, *,
-    profile_harness: str | None = None, requested_harness: str | None = None,
+    profile_harness: str | None = None,
 ) -> str | None:
     """Resolve a harness from explicit metadata or its registered route.
 
@@ -30,9 +30,9 @@ def resolved_harness_binding(
     overwritten: a contradiction still reaches ``binding_preflight`` and fails
     closed.
     """
-    explicit = requested_harness or profile_harness or candidate.get("harness") or candidate.get("serving_engine")
-    if isinstance(explicit, str) and explicit:
-        return explicit
+    for explicit in (profile_harness, candidate.get("harness"), candidate.get("serving_engine")):
+        if isinstance(explicit, str) and explicit:
+            return explicit
     if isinstance(route, str) and route.startswith("vllm:"):
         return "vllm"
     if route:
@@ -41,8 +41,7 @@ def resolved_harness_binding(
         spec = DELEGATES.get(route)
         if spec is not None:
             return spec.executable
-    transport = candidate.get("transport")
-    return transport if isinstance(transport, str) and transport else None
+    return None
 
 
 def _registry_capability(harness: str) -> tuple[bool, str | None]:

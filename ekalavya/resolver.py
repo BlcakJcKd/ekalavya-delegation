@@ -102,14 +102,18 @@ def resolve(
     except ValueError as exc:
         return Resolution(intent, None, reason=str(exc), state="invalid-reasoning", alternatives=alternatives, reason_code="unsupported-reasoning")
     route = chosen.get("execution_route") or chosen.get("route") or chosen.get("legacy_route")
-    harness = resolved_harness_binding(
-        chosen, route, profile_harness=profile.get("harness"), requested_harness=intent.harness,
-    )
+    binding_harness = resolved_harness_binding(chosen, route, profile_harness=profile.get("harness"))
     supported_harnesses = tuple(caps.get("harness_values") or ())
     if not supported_harnesses:
-        supported_harnesses = tuple(value for value in (chosen.get("harness"), chosen.get("serving_engine"), harness) if value)
+        supported_harnesses = tuple(dict.fromkeys(
+            value for value in (
+                profile.get("harness"), chosen.get("harness"),
+                chosen.get("serving_engine"), binding_harness,
+            ) if isinstance(value, str) and value
+        ))
     if intent.harness and intent.harness not in supported_harnesses:
         return Resolution(intent, None, reason=f"unsupported harness {intent.harness!r}; supported: {list(supported_harnesses)!r}", state="invalid-harness", alternatives=alternatives, reason_code="unsupported-harness")
+    harness = intent.harness or binding_harness
     preflight = binding_preflight(
         chosen, route, harness,
         model=chosen.get("provider_model_id"),

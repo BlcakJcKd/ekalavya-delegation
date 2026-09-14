@@ -147,6 +147,12 @@ class ComputeStatusTests(unittest.TestCase):
         self.assertTrue(results["luna"].configured_enabled)
         self.assertFalse(results["luna"].effective_enabled)
 
+    def test_provider_disable_without_prose_reason_has_machine_readable_reason(self):
+        config = set_enabled(default_config(), "providers", "deepseek", False, reason="")
+        result = next(item for item in compute_status(config, primary=None, which=self._which_all_present) if item.route == "deepseek-flash")
+        self.assertFalse(result.effective_enabled)
+        self.assertEqual(result.effective_reason, "provider-disabled")
+
     def test_re_enabling_provider_restores_untouched_model_preferences(self):
         config = set_enabled(default_config(), "providers", "codex", False, reason="quota low")
         config = set_enabled(config, "providers", "codex", True)

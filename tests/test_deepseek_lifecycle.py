@@ -18,7 +18,7 @@ from ekalavya.deepseek import (
     map_reasoning_level,
 )
 from ekalavya.executor import execute
-from ekalavya.readiness import binding_preflight, profile_readiness
+from ekalavya.readiness import binding_preflight, profile_readiness, resolved_harness_binding
 from ekalavya.resolver import resolve
 from ekalavya.schema import RunIntent
 
@@ -125,6 +125,58 @@ class DeepSeekLifecycleTests(unittest.TestCase):
         self.assertEqual(readiness["harness_ready"], "unavailable")
         self.assertIn("execution adapter", readiness["readiness_reason"])
 
+    def test_missing_route_does_not_infer_harness_from_transport(self):
+        candidate = {
+            "provider": "deepseek", "provider_model_id": "deepseek-flash",
+            "transport": "codex",
+        }
+        self.assertIsNone(resolved_harness_binding(candidate, "not-a-route"))
+        checked = binding_preflight(candidate, "not-a-route", None, which=lambda name: "/fake/codex-deepseek")
+        self.assertFalse(checked["ok"])
+        self.assertEqual(checked["reason_code"], "missing-route")
+
+    def test_requested_harness_is_validated_against_independent_supported_contract(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            ensure_control_files(root)
+            entries = json.loads((root / "catalogue.json").read_text())
+            profile = next(item for item in json.loads((root / "profiles.json").read_text()) if item["name"] == "deepseek-flash")
+            current = next(item for item in entries if item["identity_key"] == profile["default_identity_key"])
+            current.pop("harness")
+            with patch("ekalavya.readiness.shutil.which", return_value="/fake/codex-deepseek"):
+                valid = resolve(RunIntent("deepseek-flash", harness="codex-deepseek"), profile, entries, availability={"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-flash": {"enabled": True}}})
+                invalid = resolve(RunIntent("deepseek-flash", harness="something-else"), profile, entries, availability={"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-flash": {"enabled": True}}})
+            self.assertEqual(valid.state, "resolved")
+            self.assertEqual(valid.resolved_harness, "codex-deepseek")
+            self.assertEqual(invalid.state, "invalid-harness")
+            self.assertEqual(invalid.reason_code, "unsupported-harness")
+
+    def test_explicit_catalogue_harness_conflicting_with_route_fails_closed(self):
+        entry = {
+            "provider": "deepseek", "family": "flash", "provider_model_id": "deepseek-flash",
+            "display_name": "DeepSeek V4.1 Flash", "capabilities": {"reasoning_values": ["high"]},
+            "identity_key": "flash", "lifecycle": "current", "legacy_route": "deepseek-flash",
+            "execution_route": "deepseek-flash", "harness": "codex",
+        }
+        profile = {"name": "deepseek-flash", "default_identity_key": "flash", "permitted_candidates": ["flash"], "reasoning_policy": "fixed", "default_reasoning": "high"}
+        with patch("ekalavya.readiness.shutil.which", return_value="/fake/codex-deepseek"):
+            result = resolve(RunIntent("deepseek-flash"), profile, [entry], availability={"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-flash": {"enabled": True}}})
+        self.assertIsNone(result.candidate)
+        self.assertEqual(result.reason_code, "unsupported-harness")
+
+    def test_missing_harness_executable_after_valid_binding_is_unavailable(self):
+        entry = {
+            "provider": "deepseek", "family": "flash", "provider_model_id": "deepseek-flash",
+            "display_name": "DeepSeek V4.1 Flash", "capabilities": {"reasoning_values": ["high"]},
+            "identity_key": "flash", "lifecycle": "current", "legacy_route": "deepseek-flash",
+            "execution_route": "deepseek-flash",
+        }
+        profile = {"name": "deepseek-flash", "default_identity_key": "flash", "permitted_candidates": ["flash"], "reasoning_policy": "fixed", "default_reasoning": "high"}
+        with patch("ekalavya.readiness.shutil.which", return_value=None):
+            result = resolve(RunIntent("deepseek-flash"), profile, [entry], availability={"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-flash": {"enabled": True}}})
+        self.assertEqual(result.state, "harness-unavailable")
+        self.assertEqual(result.reason_code, "harness-unavailable")
+
     def test_pro_cutoff_is_deterministic_on_both_sides(self):
         before = DEEPSEEK_PRO_CUTOFF_UTC - timedelta(seconds=1)
         after = DEEPSEEK_PRO_CUTOFF_UTC + timedelta(seconds=1)
@@ -138,6 +190,24 @@ class DeepSeekLifecycleTests(unittest.TestCase):
         result = resolve(RunIntent("deepseek-pro"), {"default_identity_key": "pro", "permitted_candidates": ["pro"]}, [entry], now=DEEPSEEK_PRO_CUTOFF_UTC)
         self.assertEqual(result.state, "unavailable")
         self.assertIn("no fallback", result.reason)
+
+    def test_pro_cutoff_wins_over_valid_route_and_harness_readiness(self):
+        entry = {
+            "provider": "deepseek", "family": "pro", "provider_model_id": "deepseek-v4-pro",
+            "display_name": "DeepSeek V4 Pro", "capabilities": {"reasoning_values": ["high"]},
+            "identity_key": "pro", "lifecycle": "current", "legacy_route": "deepseek-pro",
+            "execution_route": "deepseek-pro", "harness": "codex-deepseek",
+        }
+        profile = {"name": "deepseek-pro", "default_identity_key": "pro", "permitted_candidates": ["pro"], "reasoning_policy": "fixed", "default_reasoning": "high"}
+        with patch("ekalavya.readiness.shutil.which", return_value="/fake/codex-deepseek"):
+            result = resolve(
+                RunIntent("deepseek-pro"), profile, [entry],
+                availability={"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-pro": {"enabled": True}}},
+                now=DEEPSEEK_PRO_CUTOFF_UTC + timedelta(seconds=1),
+            )
+        self.assertEqual(result.state, "unavailable")
+        self.assertEqual(result.reason_code, "lifecycle-not-executable")
+        self.assertIsNone(result.candidate)
 
     def test_pro_cutoff_blocks_launch_before_subprocess(self):
         with TemporaryDirectory() as temp:
