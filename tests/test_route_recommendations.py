@@ -8,7 +8,6 @@ from contextlib import redirect_stdout
 
 from delegation.config import default_config, parse_config, set_enabled, set_routing_preference
 from ekalavya.config import ensure_control_files
-from ekalavya.deepseek import DEEPSEEK_PRO_CUTOFF_UTC
 from ekalavya.recommendation import _winner_by_feedback, recommend
 from ekalavya.schema import CandidateIdentity, Resolution, RunIntent
 from ekalavya.cli import _print_route_human, main
@@ -102,18 +101,19 @@ class RouteRecommendationTests(unittest.TestCase):
             catalogue=[entry], observed_availability={}, registry={"schema_version": 1, "records": []}, now=now,
         )
 
-    def test_deepseek_pro_cutoff_is_lifecycle_exclusion(self):
+    def test_deepseek_pro_provider_disabled_is_truthful_exclusion(self):
         entry = {
             "provider": "deepseek", "family": "pro", "provider_model_id": "deepseek-v4-pro",
             "display_name": "DeepSeek V4 Pro", "capabilities": {"reasoning_values": ["high"]},
             "identity_key": "pro", "lifecycle": "current", "legacy_route": "deepseek-pro",
+            "execution_route": "deepseek-pro", "harness": "codex-deepseek",
         }
-        config = set_enabled(set_enabled(default_config(), "providers", "deepseek", True), "models", "deepseek-pro", True)
-        payload = self._recommend_one(config, {"name": "deepseek-pro", "default_identity_key": "pro", "permitted_candidates": ["pro"]}, entry, now=DEEPSEEK_PRO_CUTOFF_UTC)
-        self.assertEqual(payload["excluded"], [{"target": "profile:deepseek-pro", "code": "lifecycle-not-executable", "detail": payload["excluded"][0]["detail"]}])
+        config = set_enabled(default_config(), "models", "deepseek-pro", True)
+        payload = self._recommend_one(config, {"name": "deepseek-pro", "default_identity_key": "pro", "permitted_candidates": ["pro"]}, entry)
+        self.assertEqual(payload["excluded"], [{"target": "profile:deepseek-pro", "code": "provider-disabled", "detail": payload["excluded"][0]["detail"]}])
         with redirect_stdout(io.StringIO()) as output:
             _print_route_human(payload, explain=True)
-        self.assertIn("profile:deepseek-pro — lifecycle-not-executable", output.getvalue())
+        self.assertIn("profile:deepseek-pro — provider-disabled", output.getvalue())
 
     def test_missing_execution_route_is_missing_route(self):
         entry = {"provider": "claude", "family": "haiku", "provider_model_id": "claude-haiku", "identity_key": "haiku", "lifecycle": "current"}

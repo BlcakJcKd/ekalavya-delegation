@@ -88,7 +88,7 @@ changes a profile default. Promotion is always an explicit, user-owned action.
 ## Integrations
 
 Ekalavya currently has profiles for Codex/OpenAI (Terra, Luna), Claude
-(Haiku, Sonnet), Gemini Flash, DeepSeek V4 Flash/Pro, MiniMax M3, and named
+(Haiku, Sonnet), Gemini Flash, DeepSeek V4.1 Flash/V4 Pro, MiniMax M3, and named
 local/vLLM routes where configured. Each integration is optional: install and
 authenticate only its own provider/harness tools using that provider's normal
 flow. Missing optional integrations are reported as unavailable rather than

@@ -83,9 +83,9 @@ def resolve(
         return Resolution(intent, None, reason="profile has no unambiguous configured candidate; choose one explicitly", state="unavailable", alternatives=alternatives, reason_code="missing-route")
     if chosen.get("provider") == "deepseek" and chosen.get("provider_model_id") == DEEPSEEK_PRO_PROVIDER_MODEL_ID:
         try:
-            assert_deepseek_pro_exact(now=now, provider_reported_model_id=provider_reported_model_id)
+            assert_deepseek_pro_exact(provider_reported_model_id=provider_reported_model_id)
         except DeepSeekExactIdentityError as exc:
-            return Resolution(intent, None, reason=str(exc), state="unavailable", alternatives=alternatives, reason_code="lifecycle-not-executable")
+            return Resolution(intent, None, reason=str(exc), state="unavailable", alternatives=alternatives, reason_code="exact-identity-mismatch")
     availability_reason = _availability_block(chosen, availability)
     if availability_reason is not None:
         reason, reason_code = availability_reason

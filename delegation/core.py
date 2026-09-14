@@ -20,7 +20,6 @@ from typing import Callable
 import re
 
 from . import routing
-from ekalavya.deepseek import assert_deepseek_pro_exact
 from .paths import log_root as _xdg_log_root
 from .retention import persist_response, persist_text
 
@@ -402,7 +401,6 @@ def run_consultation(
     primary: str | None = None,
     model: str | None = None,
     effort: str | None = None,
-    now=None,
     run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[int, Path]:
     """Run exactly one read-only delegate and retain an auditable local record.
@@ -421,8 +419,6 @@ def run_consultation(
     _check_recursion_guard()
     if delegate_name not in DELEGATES:
         raise ValueError(f"unknown delegate: {delegate_name}")
-    if delegate_name == "deepseek-pro":
-        assert_deepseek_pro_exact(now=now)
     if timeout_seconds <= 0:
         raise ValueError("timeout must be positive")
     normalized_primary = _check_self_provider_guard(delegate_name, primary)

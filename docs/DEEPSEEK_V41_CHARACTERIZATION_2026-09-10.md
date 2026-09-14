@@ -53,6 +53,24 @@ peak boundary.
   current Codex/DeepSeek wrapper is text-only in this characterization, so
   Ekalavya does not claim multimodal execution support.
 
+## Current provider-contract addendum — 2026-09-14
+
+The historical observations above are retained as evidence of the provider
+contract documented on 2026-09-10. DeepSeek subsequently reversed the
+announced Pro reroute. The current contract is:
+
+- `deepseek-flash` serves DeepSeek V4.1 Flash.
+- `deepseek-v4-pro` continues to serve DeepSeek V4 Pro /
+  `DeepSeek-V4-Pro-0813` with unchanged billing.
+- Ekalavya keeps `deepseek-pro` and `deepseek-flash` as distinct exact
+  identities and routes. There is no Pro-to-Flash or Flash-to-Pro fallback.
+- A future V4.1 Pro release would require a new identity, candidate
+  characterization, and explicit promotion.
+
+The current runtime therefore applies the normal configured-provider,
+registered-route, harness-readiness, lifecycle, and exact-identity checks to
+Pro. A contradictory provider-reported effective identity still fails closed.
+
 ## Characterization
 
 Run label: `deepseek-v41-flash-characterization-20260910-001`  

@@ -12,19 +12,14 @@ from __future__ import annotations
 import json
 import subprocess
 import unittest
-from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from delegation.core import DELEGATES, DELEGATION_DEPTH_ENV, build_argv, run_consultation
 from delegation.preflight import HELP_ARGS, REQUIRED_HELP
-from ekalavya.deepseek import DEEPSEEK_PRO_CUTOFF_UTC
 
 TASK = "PAYG delegate probe; do not modify anything"
-PRE_CUTOFF = DEEPSEEK_PRO_CUTOFF_UTC - timedelta(seconds=1)
-
-
 def _scope(root: Path) -> Path:
     workspace = root / "scope"
     workspace.mkdir()
@@ -126,7 +121,7 @@ class SelfProviderGuardForNewProvidersTests(unittest.TestCase):
                 for delegate in ("deepseek-pro", "deepseek-flash", "minimax-m3"):
                     code, _ = run_consultation(
                         delegate, workspace, TASK, log_root=root / "logs",
-                        run=_fake_run(calls), primary="claude-code", now=PRE_CUTOFF,
+                        run=_fake_run(calls), primary="claude-code",
                     )
                     self.assertEqual(code, 0)
             self.assertEqual(len(calls), 3)
@@ -140,7 +135,7 @@ class SelfProviderGuardForNewProvidersTests(unittest.TestCase):
                 for delegate in ("deepseek-pro", "deepseek-flash", "minimax-m3"):
                     code, _ = run_consultation(
                         delegate, workspace, TASK, log_root=root / "logs",
-                        run=_fake_run(calls), primary="codex", now=PRE_CUTOFF,
+                        run=_fake_run(calls), primary="codex",
                     )
                     self.assertEqual(code, 0)
             self.assertEqual(len(calls), 3)
@@ -154,7 +149,7 @@ class SelfProviderGuardForNewProvidersTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "same-provider external delegation disabled"):
                     run_consultation(
                         delegate, workspace, TASK, log_root=root / "logs",
-                        run=_fake_run(calls), primary="deepseek", now=PRE_CUTOFF,
+                        run=_fake_run(calls), primary="deepseek",
                     )
                 self.assertEqual(calls, [])
 
@@ -178,12 +173,12 @@ class SelfProviderGuardForNewProvidersTests(unittest.TestCase):
             with _stub_executables():
                 code, _ = run_consultation(
                     "minimax-m3", workspace, TASK, log_root=root / "logs",
-                    run=_fake_run(calls), primary="deepseek", now=PRE_CUTOFF,
+                    run=_fake_run(calls), primary="deepseek",
                 )
                 self.assertEqual(code, 0)
                 code, _ = run_consultation(
                     "deepseek-pro", workspace, TASK, log_root=root / "logs",
-                    run=_fake_run(calls), primary="minimax", now=PRE_CUTOFF,
+                    run=_fake_run(calls), primary="minimax",
                 )
                 self.assertEqual(code, 0)
             self.assertEqual(len(calls), 2)
@@ -233,7 +228,7 @@ class NoCredentialSerializationTests(unittest.TestCase):
             with _stub_executables():
                 code, record_dir = run_consultation(
                     "deepseek-pro", workspace, TASK, log_root=root / "logs",
-                    run=_fake_run(calls), primary="claude-code", now=PRE_CUTOFF,
+                    run=_fake_run(calls), primary="claude-code",
                 )
             self.assertEqual(code, 0)
             record_text = (record_dir / "execution.json").read_text()

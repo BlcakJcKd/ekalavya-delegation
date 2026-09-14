@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import unittest
-from datetime import timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from delegation.core import run_consultation
 from ekalavya.config import ensure_control_files
 from ekalavya.deepseek import (
-    DEEPSEEK_PRO_CUTOFF_UTC,
     DEEPSEEK_REASONING_MAPPING,
     DeepSeekExactIdentityError,
     assert_deepseek_pro_exact,
@@ -24,6 +21,20 @@ from ekalavya.schema import RunIntent
 
 
 class DeepSeekLifecycleTests(unittest.TestCase):
+    def _pro_fixture(self):
+        entry = {
+            "provider": "deepseek", "family": "pro", "provider_model_id": "deepseek-v4-pro",
+            "display_name": "DeepSeek V4 Pro", "capabilities": {"reasoning_values": ["high"]},
+            "identity_key": "pro", "lifecycle": "current", "legacy_route": "deepseek-pro",
+            "execution_route": "deepseek-pro", "harness": "codex-deepseek",
+        }
+        profile = {
+            "name": "deepseek-pro", "default_identity_key": "pro", "permitted_candidates": ["pro"],
+            "reasoning_policy": "fixed", "default_reasoning": "high",
+        }
+        enabled = {"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-pro": {"enabled": True}}}
+        return entry, profile, enabled
+
     def test_reasoning_mapping_preserves_ekalavya_vocabulary(self):
         self.assertEqual(DEEPSEEK_REASONING_MAPPING, {
             "minimal": "low", "low": "low", "medium": "high",
@@ -177,50 +188,53 @@ class DeepSeekLifecycleTests(unittest.TestCase):
         self.assertEqual(result.state, "harness-unavailable")
         self.assertEqual(result.reason_code, "harness-unavailable")
 
-    def test_pro_cutoff_is_deterministic_on_both_sides(self):
-        before = DEEPSEEK_PRO_CUTOFF_UTC - timedelta(seconds=1)
-        after = DEEPSEEK_PRO_CUTOFF_UTC + timedelta(seconds=1)
-        assert_deepseek_pro_exact(now=before)
-        with self.assertRaises(DeepSeekExactIdentityError):
-            assert_deepseek_pro_exact(now=after)
-        assert_deepseek_pro_exact(now=after, provider_reported_model_id="DeepSeek-V4-Pro-0813")
+    def test_pro_resolves_exact_identity_before_and_after_former_cutoff(self):
+        entry, profile, availability = self._pro_fixture()
+        for observed_time in (
+            datetime(2026, 9, 13, tzinfo=timezone.utc),
+            datetime(2026, 9, 15, tzinfo=timezone.utc),
+        ):
+            with patch("ekalavya.readiness.shutil.which", return_value="/fake/codex-deepseek"):
+                result = resolve(
+                    RunIntent("deepseek-pro"), profile, [entry], availability=availability,
+                    now=observed_time,
+                )
+            self.assertEqual(result.state, "resolved")
+            self.assertEqual(result.candidate.provider_model_id, "deepseek-v4-pro")
+            self.assertEqual(result.candidate.display_name, "DeepSeek V4 Pro")
+            self.assertEqual(result.execution_route, "deepseek-pro")
+            self.assertEqual(result.resolved_harness, "codex-deepseek")
 
-    def test_resolver_fails_closed_for_pro_after_cutoff(self):
-        entry = {"provider": "deepseek", "family": "pro", "provider_model_id": "deepseek-v4-pro", "display_name": "DeepSeek V4 Pro", "capabilities": {"reasoning_values": ["high"]}, "identity_key": "pro", "lifecycle": "current", "legacy_route": "deepseek-pro"}
-        result = resolve(RunIntent("deepseek-pro"), {"default_identity_key": "pro", "permitted_candidates": ["pro"]}, [entry], now=DEEPSEEK_PRO_CUTOFF_UTC)
-        self.assertEqual(result.state, "unavailable")
-        self.assertIn("no fallback", result.reason)
-
-    def test_pro_cutoff_wins_over_valid_route_and_harness_readiness(self):
-        entry = {
-            "provider": "deepseek", "family": "pro", "provider_model_id": "deepseek-v4-pro",
-            "display_name": "DeepSeek V4 Pro", "capabilities": {"reasoning_values": ["high"]},
-            "identity_key": "pro", "lifecycle": "current", "legacy_route": "deepseek-pro",
-            "execution_route": "deepseek-pro", "harness": "codex-deepseek",
-        }
-        profile = {"name": "deepseek-pro", "default_identity_key": "pro", "permitted_candidates": ["pro"], "reasoning_policy": "fixed", "default_reasoning": "high"}
+    def test_pro_exact_identity_mismatch_fails_closed_without_substitution(self):
+        entry, profile, availability = self._pro_fixture()
         with patch("ekalavya.readiness.shutil.which", return_value="/fake/codex-deepseek"):
             result = resolve(
                 RunIntent("deepseek-pro"), profile, [entry],
-                availability={"providers": {"deepseek": {"enabled": True}}, "models": {"deepseek-pro": {"enabled": True}}},
-                now=DEEPSEEK_PRO_CUTOFF_UTC + timedelta(seconds=1),
+                availability=availability,
+                provider_reported_model_id="deepseek-flash",
             )
         self.assertEqual(result.state, "unavailable")
-        self.assertEqual(result.reason_code, "lifecycle-not-executable")
+        self.assertEqual(result.reason_code, "exact-identity-mismatch")
         self.assertIsNone(result.candidate)
+        self.assertIn("no fallback", result.reason)
 
-    def test_pro_cutoff_blocks_launch_before_subprocess(self):
-        with TemporaryDirectory() as temp:
-            workspace = Path(temp)
-            (workspace / ".delegation-scope.json").write_text('{"mode":"read-only"}')
-            called = []
-            def fake_run(*args, **kwargs):
-                called.append(True)
-                return subprocess.CompletedProcess(args[0], 0, "", "")
-            with patch("delegation.core.shutil.which", return_value="/bin/codex-deepseek"):
-                with self.assertRaises(DeepSeekExactIdentityError):
-                    run_consultation("deepseek-pro", workspace, "check", now=DEEPSEEK_PRO_CUTOFF_UTC, run=fake_run)
-            self.assertEqual(called, [])
+    def test_provider_disabled_pro_stays_disabled_after_valid_binding(self):
+        entry, profile, _ = self._pro_fixture()
+        disabled = {"providers": {"deepseek": {"enabled": False}}, "models": {"deepseek-pro": {"enabled": True}}}
+        with patch("ekalavya.readiness.shutil.which", return_value="/fake/codex-deepseek"):
+            readiness = profile_readiness("deepseek-pro", [profile], [entry], {"pro": {"state": "available"}}, which=lambda name: "/fake/codex-deepseek")
+            result = resolve(RunIntent("deepseek-pro"), profile, [entry], availability=disabled)
+        self.assertEqual(readiness["harness_ready"], "ready")
+        self.assertEqual(readiness["resolved_harness"], "codex-deepseek")
+        self.assertEqual(result.state, "unavailable")
+        self.assertEqual(result.reason_code, "provider-disabled")
+
+    def test_exact_identity_guard_accepts_current_pro_reports_only(self):
+        assert_deepseek_pro_exact()
+        assert_deepseek_pro_exact(provider_reported_model_id="deepseek-v4-pro")
+        assert_deepseek_pro_exact(provider_reported_model_id="DeepSeek-V4-Pro-0813")
+        with self.assertRaises(DeepSeekExactIdentityError):
+            assert_deepseek_pro_exact(provider_reported_model_id="DeepSeek V4.1 Flash")
 
 
 if __name__ == "__main__":
