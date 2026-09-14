@@ -90,7 +90,7 @@ jobs:
           "$RUNNER_TEMP/ekalavya-clean-venv/bin/python" -m pip check
           "$RUNNER_TEMP/ekalavya-clean-venv/bin/python" - <<'PY'
           import importlib.metadata
-          assert importlib.metadata.version("ekalavya-delegation") == "0.4.0.dev0"
+          assert importlib.metadata.version("ekalavya-delegation") == "0.4.0"
           PY
 
   installer-and-cli:
